@@ -28,9 +28,11 @@ class RQLCriterion(FairseqCriterion):
         self.ro_to_k = 1
         self._mistranslation_loss_weight = 0
         self._policy_loss_weight = 0
-        self.mistranslation_criterion = nn.CrossEntropyLoss(ignore_index=self.pad_index)
+        self.mistranslation_criterion = nn.CrossEntropyLoss(ignore_index=self.padding_idx)
         self.policy_criterion = nn.MSELoss()
         self.mistranslation_loss_multiplier = 30
+        self.epsilon = 0.5
+        self.teacher_forcing = 0.5
 
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -42,6 +44,8 @@ class RQLCriterion(FairseqCriterion):
         """
         src_tokens = sample["net_input"]["src_tokens"]
         trg_tokens = sample["target"]
+        src_tokens = src_tokens.T.contiguous()
+        trg_tokens = trg_tokens.T.contiguous()
         word_outputs, Q_used, Q_target, actions = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing)
         loss, mistranslation_loss = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
         sample_size = (sample["target"].size(0))
@@ -53,6 +57,8 @@ class RQLCriterion(FairseqCriterion):
         return loss, sample_size, logging_output
 
     def compute_loss(self, word_outputs, trg, Q_used, Q_target):
+        word_outputs = word_outputs.view(-1, word_outputs.shape[-1])
+        trg = trg.view(-1)
         _mistranslation_loss = self.mistranslation_criterion(word_outputs, trg)
 
         if self.training:
