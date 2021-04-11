@@ -6,8 +6,8 @@
 import math
 from dataclasses import dataclass
 
+import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from fairseq import metrics, utils
 from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.dataclass import FairseqDataclass
@@ -48,11 +48,15 @@ class RQLCriterion(FairseqCriterion):
         trg_tokens = trg_tokens.T.contiguous()
         word_outputs, Q_used, Q_target, actions = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing)
         loss, mistranslation_loss = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
-        sample_size = (sample["target"].size(0))
+        sample_size = (sample["target"].size(0) if self.sentence_avg else sample["ntokens"])
         logging_output = {
-            "loss": loss.data,
-            "mistranslation_loss": mistranslation_loss,
+            "ntokens": sample["ntokens"],
+            "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
+            "loss": loss.data,
+            "actions": actions,
+            "mistranslation_loss": mistranslation_loss,
+            "epsilon": self.epsilon
         }
         return loss, sample_size, logging_output
 
@@ -77,19 +81,28 @@ class RQLCriterion(FairseqCriterion):
     def reduce_metrics(logging_outputs) -> None:
         """Aggregate logging outputs from data parallel training."""
         loss_sum = sum(log.get("loss", 0) for log in logging_outputs)
-        mistranslation_loss_sum = sum(log.get("mistranslation_loss", 0) for log in logging_outputs)
-        sample_size_sum = sum(log.get("sample_size", 0) for log in logging_outputs)
+        ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
+        sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
+        mistranslation_loss = sum(log.get("mistranslation_loss", 0) for log in logging_outputs)
+        epsilon = sum(log.get("epsilon", 0) for log in logging_outputs)/len(logging_outputs)
 
-        metrics.log_scalar(
-            "loss", loss_sum, round=3
-        )
-        metrics.log_scalar(
-            "mistranslation_loss", mistranslation_loss_sum, round=3
-        )
-        metrics.log_scalar(
-            "sample_size", sample_size_sum, round=3
-        )
+        total_actions = sum(log.get("actions", 0) for log in logging_outputs)
+        actions_ratio = RQLCriterion.actions_ratio(total_actions.squeeze(1).tolist())
 
+        metrics.log_scalar("loss", mistranslation_loss, sample_size, round=3, priority=0)
+        metrics.log_derived("ppl", lambda meters: utils.get_perplexity(meters["loss"].avg, round=2, base=math.e), priority=1)
+        metrics.log_scalar("reads", actions_ratio[0], round=2, priority=2)
+        metrics.log_scalar("writes", actions_ratio[1], round=2, priority=3)
+        metrics.log_scalar("boths", actions_ratio[2], round=2, priority=4)
+        metrics.log_scalar("eps", epsilon, round=2, priority=5)
+
+        metrics.log_scalar("sample_size", sample_size, round=3, priority=99)
+
+    @staticmethod
+    def actions_ratio(actions):
+        s = sum(actions)
+        a = [actions[0] / s, actions[1] / s, actions[2] / s]
+        return [round(action, 2) for action in a]
 
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:
