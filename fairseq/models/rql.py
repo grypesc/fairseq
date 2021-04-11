@@ -98,9 +98,8 @@ class RQL(BaseFairseqModel):
         # In this case we'll just return a SimpleLSTMModel instance.
         source_vocab = task.source_dictionary
         target_vocab = task.target_dictionary
-        TESTING_EPISODE_MAX_TIME = 64
+        TESTING_EPISODE_MAX_TIME = 512
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        discount = 0.99
 
         net = Net(
             src_vocab_len=len(source_vocab.symbols),
@@ -111,7 +110,7 @@ class RQL(BaseFairseqModel):
             dropout=0.0,
             rnn_num_layers=args.rnn_num_layers).to(device)
 
-        model = RQL(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), discount, args.m,
+        model = RQL(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
                     target_vocab.eos_index,
                     target_vocab.bos_index,
                     target_vocab.pad_index,

@@ -13,6 +13,7 @@ from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.dataclass import FairseqDataclass
 from omegaconf import II
 
+torch.set_printoptions(threshold=10_000)
 
 @dataclass
 class RQLCriterionConfig(FairseqDataclass):
@@ -58,9 +59,15 @@ class RQLCriterion(FairseqCriterion):
             "mistranslation_loss": mistranslation_loss,
             "epsilon": self.epsilon
         }
+
+        if self.training:
+            self.epsilon = max(0.05, self.epsilon - 0.001)
         return loss, sample_size, logging_output
 
     def compute_loss(self, word_outputs, trg, Q_used, Q_target):
+        if not self.training:
+            word_outputs = word_outputs[:trg.size()[0], :, :]
+
         word_outputs = word_outputs.view(-1, word_outputs.shape[-1])
         trg = trg.view(-1)
         _mistranslation_loss = self.mistranslation_criterion(word_outputs, trg)
@@ -73,7 +80,7 @@ class RQLCriterion(FairseqCriterion):
             self._policy_loss_weight = w_k * self._policy_loss_weight + (1 - w_k) * float(_policy_loss)
             loss = _policy_loss / self._policy_loss_weight + self.mistranslation_loss_multiplier * _mistranslation_loss / self._mistranslation_loss_weight
         else:
-            loss = -1
+            loss = _mistranslation_loss
 
         return loss, _mistranslation_loss
 
