@@ -120,7 +120,7 @@ class RQL(BaseFairseqModel):
 
         return model
 
-    def forward(self, src, trg, epsilon, teacher_forcing):
+    def forward(self, src, trg=None, epsilon=None, teacher_forcing=None):
         if self.training:
             return self._training_episode(src, trg, epsilon, teacher_forcing)
         return self._testing_episode(src)
