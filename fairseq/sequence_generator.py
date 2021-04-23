@@ -14,6 +14,8 @@ from fairseq.models import FairseqIncrementalDecoder
 from torch import Tensor
 from fairseq.ngram_repeat_block import NGramRepeatBlock
 
+### RQL
+from fairseq.models.rql import RQL
 
 class SequenceGenerator(nn.Module):
     def __init__(
@@ -76,13 +78,18 @@ class SequenceGenerator(nn.Module):
             else {self.eos}
         )
         self.vocab_size = len(tgt_dict)
-        self.beam_size = beam_size
-        # the max beam size is the dictionary size - 1, since we never select pad
-        self.beam_size = min(beam_size, self.vocab_size - 1)
-        self.max_len_a = max_len_a
-        self.max_len_b = max_len_b
-        self.min_len = min_len
-        self.max_len = max_len or self.model.max_decoder_positions()
+        if isinstance(models[0], RQL): ### RQL
+            self.model = models[0]
+            # self.beam_size = 1
+            # self.max_len = self.model.testing_episode_max_time
+        else:
+            self.beam_size = beam_size
+            # the max beam size is the dictionary size - 1, since we never select pad
+            self.beam_size = min(beam_size, self.vocab_size - 1)
+            self.max_len_a = max_len_a
+            self.max_len_b = max_len_b
+            self.min_len = min_len
+            self.max_len = max_len or self.model.max_decoder_positions()
 
         self.normalize_scores = normalize_scores
         self.len_penalty = len_penalty
@@ -185,6 +192,44 @@ class SequenceGenerator(nn.Module):
         """
         return self._generate(sample, **kwargs)
 
+
+    def _generate_rql(
+            self,
+            sample: Dict[str, Dict[str, Tensor]]):
+
+        net_input = sample["net_input"]
+
+        if "src_tokens" in net_input:
+            src_tokens = net_input["src_tokens"]
+        elif "source" in net_input:
+            src_tokens = net_input["source"]
+        else:
+            raise Exception("expected src_tokens or source in net input")
+
+        bsz = src_tokens.size()[0]
+
+        out = self.model.forward(net_input["src_tokens"].T.contiguous())[0]
+        out_tokens = out.argmax(dim=2).t()
+        finalized = torch.jit.annotate(
+            List[List[Dict[str, Tensor]]],
+            [torch.jit.annotate(List[Dict[str, Tensor]], []) for i in range(bsz)],
+        )
+        for i, single_sentence_tokens in enumerate(out_tokens):
+            sentence_eos = (single_sentence_tokens == self.eos).nonzero(as_tuple=False)
+            if len(sentence_eos) == 0:
+                single_sentence_tokens[-1] = self.eos
+                limit = single_sentence_tokens.shape[0]
+            else:
+                limit = sentence_eos[0] + 1
+            to_insert = {
+                "tokens": single_sentence_tokens[:limit],
+                "score": torch.Tensor([1.0]),
+                "alignment": torch.Tensor([]),
+                "positional_scores": torch.Tensor([1.0 for _ in range(limit)])
+            }
+            finalized[i].append(to_insert)
+        return finalized
+
     def _generate(
         self,
         sample: Dict[str, Dict[str, Tensor]],
@@ -192,6 +237,8 @@ class SequenceGenerator(nn.Module):
         constraints: Optional[Tensor] = None,
         bos_token: Optional[int] = None,
     ):
+        if isinstance(self.model, RQL): ### RQL
+            return self._generate_rql(sample)
         incremental_states = torch.jit.annotate(
             List[Dict[str, Dict[str, Optional[Tensor]]]],
             [
