@@ -13,9 +13,8 @@ from fairseq.data import data_utils
 from fairseq.models import FairseqIncrementalDecoder
 from torch import Tensor
 from fairseq.ngram_repeat_block import NGramRepeatBlock
+from fairseq.models.rlst import RLST
 
-### RQL
-from fairseq.models.rql import RQL
 
 class SequenceGenerator(nn.Module):
     def __init__(
@@ -78,7 +77,7 @@ class SequenceGenerator(nn.Module):
             else {self.eos}
         )
         self.vocab_size = len(tgt_dict)
-        if isinstance(models[0], RQL): ### RQL
+        if isinstance(models[0], RLST): ### RQL
             self.model = models[0]
             # self.beam_size = 1
             # self.max_len = self.model.testing_episode_max_time
@@ -237,7 +236,7 @@ class SequenceGenerator(nn.Module):
         constraints: Optional[Tensor] = None,
         bos_token: Optional[int] = None,
     ):
-        if isinstance(self.model, RQL): ### RQL
+        if isinstance(self.model, RLST): ### RQL
             return self._generate_rql(sample)
         incremental_states = torch.jit.annotate(
             List[Dict[str, Dict[str, Optional[Tensor]]]],

@@ -9,11 +9,11 @@
 </p>
 
 --------------------------------------------------------------------------------
-Running RQL:
+Running RLST:
 ```shell
-fairseq-train data-bin/iwslt14.tokenized.de-en --arch rql --rnn_hid_dim 256 --rnn_num_layers 1 --src_embed_dim 256 \
+fairseq-train data-bin/iwslt14.tokenized.de-en --arch rlst --rnn_hid_dim 256 --rnn_num_layers 1 --src_embed_dim 256 \
 --trg_embed_dim 256 --batch-size 64 --batch-size-valid 64 --optimizer adam --clip-norm 1.0 --lr 1e-3 \
---weight-decay 1e-5 --left-pad-source --criterion rql_criterion
+--weight-decay 1e-5 --left-pad-source --criterion rlst_criterion --eval-bleu
 ```
 
 Fairseq(-py) is a sequence modeling toolkit that allows researchers and

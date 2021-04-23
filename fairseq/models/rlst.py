@@ -35,15 +35,15 @@ class Net(nn.Module):
         return outputs, rnn_state
 
 
-@register_model('rql')
-class RQL(BaseFairseqModel):
-    def __init__(self, net, device, testing_episode_max_time, target_vocab_len, discount, m,
+@register_model('rlst')
+class RLST(BaseFairseqModel):
+    def __init__(self, net, device, testing_episode_max_time, trg_vocab_len, discount, m,
                  src_eos_index, src_null_index, src_pad_index, trg_eos_index, trg_null_index, trg_pad_index):
         super().__init__()
         self.net = net
         self.device = device
         self.testing_episode_max_time = testing_episode_max_time
-        self.target_vocab_len = target_vocab_len
+        self.trg_vocab_len = trg_vocab_len
         self.DISCOUNT = discount
         self.M = m  # Read after eos punishment
 
@@ -110,13 +110,13 @@ class RQL(BaseFairseqModel):
             dropout=0.0,
             rnn_num_layers=args.rnn_num_layers).to(device)
 
-        model = RQL(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
-                    target_vocab.eos_index,
-                    target_vocab.bos_index,
-                    target_vocab.pad_index,
-                    source_vocab.eos_index,
-                    source_vocab.bos_index,
-                    source_vocab.pad_index).to(device)
+        model = RLST(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
+                     source_vocab.eos_index,
+                     source_vocab.bos_index,
+                     source_vocab.pad_index,
+                     target_vocab.eos_index,
+                     target_vocab.bos_index,
+                     target_vocab.pad_index).to(device)
 
         return model
 
@@ -133,7 +133,7 @@ class RQL(BaseFairseqModel):
         word_output = torch.full((1, batch_size), int(self.TRG_NULL), device=device)
         rnn_state = torch.zeros((self.net.rnn_num_layers, batch_size, self.net.rnn_hid_dim), device=device)
 
-        word_outputs = torch.zeros((trg_seq_len, batch_size, self.target_vocab_len), device=device)
+        word_outputs = torch.zeros((trg_seq_len, batch_size, self.trg_vocab_len), device=device)
         Q_used = torch.zeros((src_seq_len + trg_seq_len, batch_size), device=device)
         Q_target = torch.zeros((src_seq_len + trg_seq_len, batch_size), device=device)
 
@@ -149,14 +149,14 @@ class RQL(BaseFairseqModel):
         while True:
             input = torch.gather(src, 0, i)
             input[writing_agents] = self.SRC_NULL
-            input[naughty_agents] = self.SRC_PAD
+            input[naughty_agents] = self.SRC_EOS
             output, rnn_state = self.net(input, word_output, rnn_state)
             _, word_output = torch.max(output[:, :, :-3], dim=2)
+            action = torch.max(output[:, :, -3:], 2)[1]
 
-            if random.random() < epsilon:
-                action = torch.randint(low=0, high=3, size=(1, batch_size), device=device)
-            else:
-                action = torch.max(output[:, :, -3:], 2)[1]
+            random_action_agents = torch.rand((1, batch_size), device=device) < epsilon
+            random_action = torch.randint(low=0, high=3, size=(1, batch_size), device=device)
+            action[random_action_agents] = random_action[random_action_agents]
 
             Q_used[t, :] = torch.gather(output[0, :, -3:], 1, action.T).squeeze_(1)
             Q_used[t, terminated_agents.squeeze(0)] = 0
@@ -191,7 +191,7 @@ class RQL(BaseFairseqModel):
             with torch.no_grad():
                 _input = torch.gather(src, 0, i)
                 _input[writing_agents] = self.SRC_NULL
-                _input[naughty_agents] = self.SRC_PAD
+                _input[naughty_agents] = self.SRC_EOS
                 _output, _ = self.net(_input, word_output, rnn_state)
                 next_best_action_value, _ = torch.max(_output[:, :, -3:], 2)
 
@@ -214,7 +214,7 @@ class RQL(BaseFairseqModel):
         word_output = torch.full((1, batch_size), int(self.TRG_NULL), device=device)
         rnn_state = torch.zeros((self.net.rnn_num_layers, batch_size, self.net.rnn_hid_dim), device=device)
 
-        word_outputs = torch.zeros((self.testing_episode_max_time, batch_size, self.target_vocab_len), device=device)
+        word_outputs = torch.zeros((self.testing_episode_max_time, batch_size, self.trg_vocab_len), device=device)
 
         writing_agents = torch.full((1, batch_size), False, device=device, requires_grad=False)
         naughty_agents = torch.full((1, batch_size,), False, device=device, requires_grad=False)  # Want more input after input eos
@@ -228,7 +228,7 @@ class RQL(BaseFairseqModel):
         while True:
             input = torch.gather(src, 0, i)
             input[writing_agents] = self.SRC_NULL
-            input[naughty_agents] = self.SRC_PAD
+            input[naughty_agents] = self.SRC_EOS
             output, rnn_state = self.net(input, word_output, rnn_state)
             _, word_output = torch.max(output[:, :, :-3], dim=2)
             action = torch.max(output[:, :, -3:], 2)[1]
@@ -262,15 +262,16 @@ class RQL(BaseFairseqModel):
 # to match the desired architecture.
 
 
-@register_model_architecture('rql', 'rql')
-def rql(args):
+@register_model_architecture('rlst', 'rlst')
+def rlst(args):
     # We use ``getattr()`` to prioritize arguments that are explicitly given
     # on the command-line, so that the defaults defined below are only used
     # when no other value has been specified.
     args.rnn_hid_dim = getattr(args, 'rnn_hid_dim', 256)
     args.rnn_num_layers = getattr(args, 'rnn_num_layers', 1)
+    args.dropout = getattr(args, 'dropout', 0.00)
     args.src_embed_dim = getattr(args, 'src_embed_dim', 128)
     args.trg_embed_dim = getattr(args, 'trg_embed_dim', 128)
-    args.discount = getattr(args, 'discount', 0.99)
-    args.m = getattr(args, 'm', 3.0)
-    args.dropout = getattr(args, 'dropout', 0.00)
+    args.discount = getattr(args, 'discount', 0.90)
+    args.m = getattr(args, 'm', 10.0)
+
