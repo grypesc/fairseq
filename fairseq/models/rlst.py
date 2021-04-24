@@ -1,8 +1,7 @@
 import random
-
 import torch
 import torch.nn as nn
-from fairseq import utils
+
 from fairseq.models import BaseFairseqModel, register_model, register_model_architecture
 
 
@@ -17,13 +16,11 @@ class Net(nn.Module):
                  rnn_num_layers):
         super().__init__()
 
-        src_emb_dim = src_embed_dim
-        trg_emb_dim = trg_embed_dim
         self.rnn_hid_dim = rnn_hid_dim
         self.rnn_num_layers = rnn_num_layers
-        self.src_embedding = nn.Embedding(src_vocab_len, src_emb_dim)
-        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_emb_dim)
-        self.rnn = nn.GRU(src_emb_dim + trg_emb_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=dropout)
+        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
+        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
+        self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=dropout)
         self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
 
     def forward(self, src, previous_output, rnn_state):
@@ -87,7 +84,7 @@ class RLST(BaseFairseqModel):
         )
         parser.add_argument(
             '--dropout', type=float, metavar='N',
-            help='number of rnn layers',
+            help='dropout between rnn layers',
         )
 
     @classmethod
@@ -107,7 +104,7 @@ class RLST(BaseFairseqModel):
             src_embed_dim=args.src_embed_dim,
             trg_embed_dim=args.trg_embed_dim,
             rnn_hid_dim=args.rnn_hid_dim,
-            dropout=0.0,
+            dropout=args.dropout,
             rnn_num_layers=args.rnn_num_layers).to(device)
 
         model = RLST(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
@@ -255,11 +252,6 @@ class RLST(BaseFairseqModel):
             if t >= self.testing_episode_max_time - 1:
                 return word_outputs, None, None, actions_count.unsqueeze_(dim=1)
             t += 1
-
-# The first argument to ``register_model_architecture()`` should be the name
-# of the model we registered above (i.e., 'simple_lstm'). The function we
-# register here should take a single argument *args* and modify it in-place
-# to match the desired architecture.
 
 
 @register_model_architecture('rlst', 'rlst')

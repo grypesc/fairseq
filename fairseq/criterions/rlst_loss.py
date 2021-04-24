@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
@@ -17,22 +17,39 @@ torch.set_printoptions(threshold=10_000)
 
 @dataclass
 class RLSTCriterionConfig(FairseqDataclass):
+    starting_policy_divisor: float = field(
+        default=30.0,
+        metadata={"help": "starting policy divisor"},
+    )
+    policy_divisor_decay: float = field(
+        default=0.00001,
+        metadata={"help": "policy divisor decay per minibatch"},
+    )
+    epsilon: float = field(
+        default=0.20,
+        metadata={"help": "epsilon"},
+    )
+    rho: float = field(
+        default=0.99,
+        metadata={"help": "rho"},
+    )
     sentence_avg: bool = II("optimization.sentence_avg")
 
 
 @register_criterion("rlst_criterion", dataclass=RLSTCriterionConfig)
 class RLSTCriterion(FairseqCriterion):
-    def __init__(self, task, sentence_avg):
+    def __init__(self, task, sentence_avg, starting_policy_divisor, policy_divisor_decay, epsilon, rho):
         super().__init__(task)
         self.sentence_avg = sentence_avg
-        self.RHO = 0.99
+        self.RHO = rho
         self.rho_to_n = 1  # n is minibatch index
         self.mistranslation_loss_weight = 0
         self.policy_loss_weight = 0
         self.mistranslation_criterion = nn.CrossEntropyLoss(ignore_index=self.padding_idx)
         self.policy_criterion = nn.MSELoss(reduction="sum")
-        self.policy_divisor = 30
-        self.epsilon = 0.2
+        self.policy_divisor = starting_policy_divisor
+        self.POLICY_DIVISOR_DECAY = policy_divisor_decay
+        self.epsilon = epsilon
         self.teacher_forcing = 0.5
 
     def forward(self, model, sample, reduce=True):
@@ -62,7 +79,7 @@ class RLSTCriterion(FairseqCriterion):
         }
 
         if self.training:
-            self.policy_divisor = max(5, self.policy_divisor - 0.00001)
+            self.policy_divisor = max(5.0, self.policy_divisor - self.POLICY_DIVISOR_DECAY)
         return loss, sample_size, logging_output
 
     def compute_loss(self, word_outputs, trg, Q_used, Q_target):
