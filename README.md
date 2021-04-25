@@ -11,9 +11,12 @@
 --------------------------------------------------------------------------------
 Running RLST:
 ```shell
-fairseq-train data-bin/iwslt14.tokenized.de-en --arch rlst --rnn_hid_dim 256 --rnn_num_layers 1 --src_embed_dim 256 \
---trg_embed_dim 256 --batch-size 64 --batch-size-valid 64 --optimizer adam --clip-norm 1.0 --lr 1e-3 \
---weight-decay 1e-5 --left-pad-source --criterion rlst_criterion --eval-bleu
+fairseq-train data-bin/iwslt14.tokenized.de-en --arch rlst --rnn_hid_dim 1024 --rnn_num_layers 2 --dropout 0.3 \
+--src_embed_dim 512 --trg_embed_dim 512  --max-tokens 4096 \
+--optimizer adam --clip-norm 0.0 --lr 1e-3  --weight-decay 1e-5 --left-pad-source \
+--criterion rlst_criterion --epsilon 0.2 --starting-policy-divisor 30 --policy-divisor-decay 1e-5 \
+--eval-bleu --best-checkpoint-metric bleu \
+--save-dir checkpoints/rlst
 ```
 
 Fairseq(-py) is a sequence modeling toolkit that allows researchers and
