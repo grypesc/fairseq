@@ -12,7 +12,8 @@ class Net(nn.Module):
                  src_embed_dim,
                  trg_embed_dim,
                  rnn_hid_dim,
-                 dropout,
+                 rnn_dropout,
+                 embedding_dropout,
                  rnn_num_layers):
         super().__init__()
 
@@ -20,12 +21,13 @@ class Net(nn.Module):
         self.rnn_num_layers = rnn_num_layers
         self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
         self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
-        self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=dropout)
+        self.embedding_dropout = nn.Dropout(embedding_dropout)
+        self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=rnn_dropout)
         self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
 
     def forward(self, src, previous_output, rnn_state):
-        src_embedded = self.src_embedding(src)
-        trg_embedded = self.trg_embedding(previous_output)
+        src_embedded = self.embedding_dropout(self.src_embedding(src))
+        trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
         rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
         rnn_output, rnn_state = self.rnn(rnn_input, rnn_state)
         outputs = self.output(rnn_output)
@@ -83,8 +85,12 @@ class RLST(BaseFairseqModel):
             help='read after source eos punishment',
         )
         parser.add_argument(
-            '--dropout', type=float, metavar='N',
+            '--rnn_dropout', type=float, metavar='N',
             help='dropout between rnn layers',
+        )
+        parser.add_argument(
+            '--embedding_dropout', type=float, metavar='N',
+            help='dropout after embedding layers',
         )
 
     @classmethod
@@ -104,7 +110,8 @@ class RLST(BaseFairseqModel):
             src_embed_dim=args.src_embed_dim,
             trg_embed_dim=args.trg_embed_dim,
             rnn_hid_dim=args.rnn_hid_dim,
-            dropout=args.dropout,
+            rnn_dropout=args.rnn_dropout,
+            embedding_dropout=args.embedding_dropout,
             rnn_num_layers=args.rnn_num_layers).to(device)
 
         model = RLST(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
@@ -261,7 +268,8 @@ def rlst(args):
     # when no other value has been specified.
     args.rnn_hid_dim = getattr(args, 'rnn_hid_dim', 256)
     args.rnn_num_layers = getattr(args, 'rnn_num_layers', 1)
-    args.dropout = getattr(args, 'dropout', 0.00)
+    args.rnn_dropout = getattr(args, 'rnn_dropout', 0.20)
+    args.embedding_dropout = getattr(args, 'embedding_dropout', 0.20)
     args.src_embed_dim = getattr(args, 'src_embed_dim', 128)
     args.trg_embed_dim = getattr(args, 'trg_embed_dim', 128)
     args.discount = getattr(args, 'discount', 0.90)
