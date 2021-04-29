@@ -13,7 +13,7 @@ Running RLST:
 ```shell
 CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --arch rlst --rnn_hid_dim 1024 --rnn_num_layers 2 --rnn_dropout 0.3 \
 --src_embed_dim 512 --trg_embed_dim 512  --embedding_dropout 0.3 --max-tokens 4096 --max-epoch 100 \
---optimizer adam --clip-norm 0.0 --lr 1e-3  --weight-decay 1e-5 --left-pad-source \
+--optimizer adam --clip-norm 0.0 --lr 1e-3  --weight-decay 1e-5 --left-pad-source --warmup-updates 1000 \
 --criterion rlst_criterion --epsilon 0.1 --starting-policy-divisor 30 --policy-divisor-decay 1e-4 \
 --eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
 --save-dir checkpoints/rlst

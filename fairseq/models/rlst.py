@@ -101,7 +101,7 @@ class RLST(BaseFairseqModel):
         # In this case we'll just return a SimpleLSTMModel instance.
         source_vocab = task.source_dictionary
         target_vocab = task.target_dictionary
-        TESTING_EPISODE_MAX_TIME = 512
+        TESTING_EPISODE_MAX_TIME = 350
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         net = Net(
