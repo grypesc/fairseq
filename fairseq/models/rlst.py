@@ -22,16 +22,17 @@ class Net(nn.Module):
         self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
         self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
         self.embedding_dropout = nn.Dropout(embedding_dropout)
-        self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=rnn_dropout)
+        self.embedding_linear = nn.Linear(src_embed_dim + trg_embed_dim, 1024)
+        self.rnn = nn.GRU(1024, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=rnn_dropout)
         self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
         self.activation = nn.ReLU()
 
     def forward(self, src, previous_output, rnn_state):
         src_embedded = self.embedding_dropout(self.src_embedding(src))
         trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
-        rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
+        rnn_input = self.activation(self.embedding_dropout(self.embedding_linear(torch.cat((src_embedded, trg_embedded), dim=2))))
         rnn_output, rnn_state = self.rnn(rnn_input, rnn_state)
-        outputs = self.output(self.activation(rnn_output))
+        outputs = self.output(rnn_output)
         return outputs, rnn_state
 
 
