@@ -19,8 +19,10 @@ class Net(nn.Module):
 
         self.rnn_hid_dim = rnn_hid_dim
         self.rnn_num_layers = rnn_num_layers
-        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim, scale_grad_by_freq=True)
-        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim, scale_grad_by_freq=True)
+        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
+        nn.init.normal_(self.src_embedding.weight, 0, 0.01)
+        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
+        nn.init.normal_(self.trg_embedding.weight, 0, 0.01)
         self.embedding_dropout = nn.Dropout(embedding_dropout)
         self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=rnn_dropout)
         self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
@@ -268,10 +270,10 @@ def rlst(args):
     # when no other value has been specified.
     args.rnn_hid_dim = getattr(args, 'rnn_hid_dim', 256)
     args.rnn_num_layers = getattr(args, 'rnn_num_layers', 1)
-    args.rnn_dropout = getattr(args, 'rnn_dropout', 0.20)
+    args.rnn_dropout = getattr(args, 'rnn_dropout', 0.0)
     args.embedding_dropout = getattr(args, 'embedding_dropout', 0.0)
     args.src_embed_dim = getattr(args, 'src_embed_dim', 128)
     args.trg_embed_dim = getattr(args, 'trg_embed_dim', 128)
-    args.discount = getattr(args, 'discount', 0.90)
+    args.discount = getattr(args, 'discount', 0.75)
     args.m = getattr(args, 'm', 10.0)
 

@@ -17,13 +17,9 @@ torch.set_printoptions(threshold=10_000)
 
 @dataclass
 class RLSTCriterionConfig(FairseqDataclass):
-    starting_policy_divisor: float = field(
-        default=30.0,
-        metadata={"help": "starting policy divisor"},
-    )
-    policy_divisor_decay: float = field(
-        default=0.0001,
-        metadata={"help": "policy divisor decay per minibatch"},
+    N: float = field(
+        default=100_000.0,
+        metadata={"help": "N"},
     )
     epsilon: float = field(
         default=0.15,
@@ -38,7 +34,7 @@ class RLSTCriterionConfig(FairseqDataclass):
 
 @register_criterion("rlst_criterion", dataclass=RLSTCriterionConfig)
 class RLSTCriterion(FairseqCriterion):
-    def __init__(self, task, sentence_avg, starting_policy_divisor, policy_divisor_decay, epsilon, rho):
+    def __init__(self, task, sentence_avg, N, epsilon, rho):
         super().__init__(task)
         self.sentence_avg = sentence_avg
         self.RHO = rho
@@ -47,8 +43,9 @@ class RLSTCriterion(FairseqCriterion):
         self.policy_loss_weight = 0
         self.mistranslation_criterion = nn.CrossEntropyLoss(ignore_index=self.padding_idx)
         self.policy_criterion = nn.MSELoss(reduction="sum")
-        self.policy_divisor = starting_policy_divisor
-        self.POLICY_DIVISOR_DECAY = policy_divisor_decay
+        self.policy_multiplier = None
+        self.n = -1
+        self.N = N
         self.epsilon = epsilon
         self.teacher_forcing = 0.5
 
@@ -65,7 +62,7 @@ class RLSTCriterion(FairseqCriterion):
         src_tokens = src_tokens.T.contiguous()
         trg_tokens = trg_tokens.T.contiguous()
         word_outputs, Q_used, Q_target, actions = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing)
-        loss, mistranslation_loss, policy_loss = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
+        loss, mistranslation_loss, policy_loss, _ = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
         sample_size = (sample["target"].size(0) if self.sentence_avg else sample["ntokens"])
         logging_output = {
             "ntokens": sample["ntokens"],
@@ -74,12 +71,10 @@ class RLSTCriterion(FairseqCriterion):
             "actions": actions,
             "mistranslation_loss": mistranslation_loss,
             "policy_loss": policy_loss,
-            "policy_divisor": self.policy_divisor,
+            "policy_multiplier": self.policy_multiplier,
             "epsilon": self.epsilon
         }
 
-        if self.training:
-            self.policy_divisor = max(5.0, self.policy_divisor - self.POLICY_DIVISOR_DECAY)
         return loss, sample_size, logging_output
 
     def compute_loss(self, word_outputs, trg, Q_used, Q_target):
@@ -91,15 +86,17 @@ class RLSTCriterion(FairseqCriterion):
 
         mistranslation_loss = self.mistranslation_criterion(word_outputs, trg)
         if self.training:
+            self.n += 1
+            self.policy_multiplier = 1/3 - (1/3 - 1/30) * math.e ** ((-3) * self.n / self.N)
             policy_loss = self.policy_criterion(Q_used, Q_target)/torch.count_nonzero(Q_target)
             self.rho_to_n *= self.RHO
             w_k = (self.RHO - self.rho_to_n) / (1 - self.rho_to_n)
             self.mistranslation_loss_weight = w_k * self.mistranslation_loss_weight + (1 - w_k) * float(mistranslation_loss)
             self.policy_loss_weight = w_k * self.policy_loss_weight + (1 - w_k) * float(policy_loss)
-            loss = policy_loss / (self.policy_loss_weight * self.policy_divisor) + mistranslation_loss / self.mistranslation_loss_weight
-            return loss, mistranslation_loss, policy_loss
+            loss = policy_loss * self.policy_multiplier / self.policy_loss_weight + mistranslation_loss / self.mistranslation_loss_weight
+            return loss, mistranslation_loss, policy_loss, self.policy_multiplier
         else:
-            return mistranslation_loss, mistranslation_loss, -1.0
+            return -1.0, mistranslation_loss, -1.0, self.policy_multiplier
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:
@@ -108,7 +105,7 @@ class RLSTCriterion(FairseqCriterion):
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
         mistranslation_loss = sum(log.get("mistranslation_loss", 0) for log in logging_outputs)
         policy_loss = sum(log.get("policy_loss", 0) for log in logging_outputs)
-        policy_divisor = sum(log.get("policy_divisor", 0) for log in logging_outputs)
+        policy_multiplier = sum(log.get("policy_multiplier", 0) for log in logging_outputs)
         epsilon = sum(log.get("epsilon", 0) for log in logging_outputs)/len(logging_outputs)
 
         total_actions = sum(log.get("actions", 0) for log in logging_outputs)
@@ -117,7 +114,7 @@ class RLSTCriterion(FairseqCriterion):
         metrics.log_scalar("loss", mistranslation_loss, sample_size, round=3, priority=0)
         metrics.log_derived("ppl", lambda meters: utils.get_perplexity(meters["loss"].avg, round=2, base=math.e), priority=1)
         metrics.log_scalar("policy_loss", policy_loss, sample_size, round=2, priority=2)
-        metrics.log_scalar("policy_divisor", policy_divisor, round=2, priority=3)
+        metrics.log_scalar("plm", policy_multiplier, round=2, priority=3)
         metrics.log_scalar("eps", epsilon, round=2, priority=4)
         metrics.log_scalar("reads", actions_ratio[0], round=2, priority=5)
         metrics.log_scalar("writes", actions_ratio[1], round=2, priority=6)
