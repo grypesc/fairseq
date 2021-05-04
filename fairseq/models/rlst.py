@@ -20,9 +20,7 @@ class Net(nn.Module):
         self.rnn_hid_dim = rnn_hid_dim
         self.rnn_num_layers = rnn_num_layers
         self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
-        nn.init.normal_(self.src_embedding.weight, 0, 0.01)
         self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
-        nn.init.normal_(self.trg_embedding.weight, 0, 0.01)
         self.embedding_dropout = nn.Dropout(embedding_dropout)
         self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=rnn_dropout)
         self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
@@ -115,6 +113,16 @@ class RLST(BaseFairseqModel):
             rnn_dropout=args.rnn_dropout,
             embedding_dropout=args.embedding_dropout,
             rnn_num_layers=args.rnn_num_layers).to(device)
+
+        nn.init.uniform_(net.src_embedding.weight, -0.1, 0.1)
+        nn.init.uniform_(net.src_embedding.weight[source_vocab.eos_index], -0.2, 0.2)
+        nn.init.uniform_(net.src_embedding.weight[source_vocab.bos_index], -0.2, 0.2)
+        nn.init.uniform_(net.src_embedding.weight[source_vocab.pad_index], -0.2, 0.2)
+
+        nn.init.uniform_(net.trg_embedding.weight, -0.1, 0.1)
+        nn.init.uniform_(net.trg_embedding.weight[target_vocab.eos_index], -0.2, 0.2)
+        nn.init.uniform_(net.trg_embedding.weight[target_vocab.bos_index], -0.2, 0.2)
+        nn.init.uniform_(net.trg_embedding.weight[target_vocab.pad_index], -0.2, 0.2)
 
         model = RLST(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
                      source_vocab.eos_index,
