@@ -25,6 +25,10 @@ class RLSTCriterionConfig(FairseqDataclass):
         default=0.15,
         metadata={"help": "epsilon"},
     )
+    teacher_forcing: float = field(
+        default=0.5,
+        metadata={"help": "teacher force"},
+    )
     rho: float = field(
         default=0.99,
         metadata={"help": "rho"},
@@ -34,7 +38,7 @@ class RLSTCriterionConfig(FairseqDataclass):
 
 @register_criterion("rlst_criterion", dataclass=RLSTCriterionConfig)
 class RLSTCriterion(FairseqCriterion):
-    def __init__(self, task, sentence_avg, N, epsilon, rho):
+    def __init__(self, task, sentence_avg, N, epsilon, teacher_forcing, rho):
         super().__init__(task)
         self.sentence_avg = sentence_avg
         self.RHO = rho
@@ -47,7 +51,7 @@ class RLSTCriterion(FairseqCriterion):
         self.n = -1
         self.N = N
         self.epsilon = epsilon
-        self.teacher_forcing = 0.5
+        self.teacher_forcing = teacher_forcing
 
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
