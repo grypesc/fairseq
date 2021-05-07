@@ -13,14 +13,14 @@ Running RLST:
 ```shell
 CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --arch rlst --rnn_hid_dim 512 --rnn_num_layers 2 --rnn_dropout 0.2 \
 --src_embed_dim 256 --trg_embed_dim 256  --embedding_dropout 0.0 --max-tokens 4096 --max-epoch 50 \
---optimizer adam --clip-norm 1.0 --lr 1e-3  --weight-decay 1e-8 --left-pad-source --warmup-updates 100 \
---criterion rlst_criterion --epsilon 0.15 --N 200000 --discount 0.80 \
+--optimizer adam --clip-norm 1.0 --lr 1e-3  --weight-decay 1e-6 --left-pad-source --warmup-updates 100 \
+--criterion rlst_criterion --epsilon 0.15 --N 300000 --m 8.0 --discount 0.80 --validate-after-updates 20000\
 --eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
 --save-dir checkpoints/rlst
 ```
 ```shell
-CUDA_VISIBLE_DEVICES=3 fairseq-train data-bin/iwslt14.tokenized.de-en --optimizer adam --lr 1e-3 --clip-norm 1.0  --max-tokens 4096
- --save-dir checkpoints/lstm/ --arch lstm_wiseman_iwslt_de_en --eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe 
+CUDA_VISIBLE_DEVICES=3 fairseq-train data-bin/iwslt14.tokenized.de-en --optimizer adam --lr 1e-3 --clip-norm 1.0  --max-tokens 4096 \
+ --save-dir checkpoints/lstm/ --arch lstm_wiseman_iwslt_de_en --eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe \
  --best-checkpoint-metric bleu --maximize-best-checkpoint-metric
 ```
 

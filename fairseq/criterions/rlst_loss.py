@@ -15,6 +15,7 @@ from omegaconf import II
 
 torch.set_printoptions(threshold=10_000)
 
+
 @dataclass
 class RLSTCriterionConfig(FairseqDataclass):
     N: float = field(
@@ -33,12 +34,22 @@ class RLSTCriterionConfig(FairseqDataclass):
         default=0.99,
         metadata={"help": "rho"},
     )
+    eta_min: float = field(
+        default=1/30,
+        metadata={"help": "minimum value of policy multiplier"},
+    )
+    eta_max: float = field(
+        default=0.2,
+        metadata={"help": "maximum value of policy multiplier"},
+    )
     sentence_avg: bool = II("optimization.sentence_avg")
 
 
-@register_criterion("rlst_criterion", dataclass=RLSTCriterionConfig)
+@register_criterion(
+    "rlst_criterion", dataclass=RLSTCriterionConfig
+)
 class RLSTCriterion(FairseqCriterion):
-    def __init__(self, task, sentence_avg, N, epsilon, teacher_forcing, rho):
+    def __init__(self, task, sentence_avg, N, epsilon, teacher_forcing, rho, eta_min, eta_max):
         super().__init__(task)
         self.sentence_avg = sentence_avg
         self.RHO = rho
@@ -52,6 +63,8 @@ class RLSTCriterion(FairseqCriterion):
         self.N = N
         self.epsilon = epsilon
         self.teacher_forcing = teacher_forcing
+        self.eta_min = eta_min
+        self.eta_max = eta_max
 
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -91,7 +104,7 @@ class RLSTCriterion(FairseqCriterion):
         mistranslation_loss = self.mistranslation_criterion(word_outputs, trg)
         if self.training:
             self.n += 1
-            self.policy_multiplier = 1/3 - (1/3 - 1/30) * math.e ** ((-3) * self.n / self.N)
+            self.policy_multiplier = self.eta_max - (self.eta_max - self.eta_min) * math.e ** (((-1) / self.eta_max) * self.n / self.N)
             policy_loss = self.policy_criterion(Q_used, Q_target)/torch.count_nonzero(Q_target)
             self.rho_to_n *= self.RHO
             w_k = (self.RHO - self.rho_to_n) / (1 - self.rho_to_n)
