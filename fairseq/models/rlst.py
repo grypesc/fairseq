@@ -114,15 +114,20 @@ class RLST(BaseFairseqModel):
             embedding_dropout=args.embedding_dropout,
             rnn_num_layers=args.rnn_num_layers).to(device)
 
-        nn.init.uniform_(net.src_embedding.weight, -0.1, 0.1)
-        nn.init.uniform_(net.src_embedding.weight[source_vocab.eos_index], -0.2, 0.2)
-        nn.init.uniform_(net.src_embedding.weight[source_vocab.bos_index], -0.2, 0.2)
-        nn.init.uniform_(net.src_embedding.weight[source_vocab.pad_index], -0.2, 0.2)
-
-        nn.init.uniform_(net.trg_embedding.weight, -0.1, 0.1)
-        nn.init.uniform_(net.trg_embedding.weight[target_vocab.eos_index], -0.2, 0.2)
-        nn.init.uniform_(net.trg_embedding.weight[target_vocab.bos_index], -0.2, 0.2)
-        nn.init.uniform_(net.trg_embedding.weight[target_vocab.pad_index], -0.2, 0.2)
+        def init_uniform(m):
+            if hasattr(m, 'weight'):
+                nn.init.uniform_(m.weight, -0.01, 0.01)
+            if hasattr(m, 'bias') and not isinstance(m.bias, bool):
+                nn.init.uniform_(m.bias, -0.01, 0.01)
+            if hasattr(m, 'bias_hh_l0'):
+                nn.init.uniform_(m.bias_hh_l0, -0.01, 0.01)
+            if hasattr(m, 'bias_ih_l0'):
+                nn.init.uniform_(m.bias_ih_l0, -0.01, 0.01)
+            if hasattr(m, 'weight_hh_l0'):
+                nn.init.uniform_(m.weight_hh_l0, -0.01, 0.01)
+            if hasattr(m, 'weight_ih_l0'):
+                nn.init.uniform_(m.weight_ih_l0, -0.01, 0.01)
+        net.apply(init_uniform)
 
         model = RLST(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
                      source_vocab.eos_index,
