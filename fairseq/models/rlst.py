@@ -128,6 +128,7 @@ class RLST(BaseFairseqModel):
             if hasattr(m, 'weight_ih_l0'):
                 nn.init.uniform_(m.weight_ih_l0, -0.01, 0.01)
         net.apply(init_uniform)
+        nn.init.uniform_(net.output.weight[-3:, :], -30, -10)
 
         model = RLST(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
                      source_vocab.eos_index,
