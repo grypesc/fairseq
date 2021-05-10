@@ -101,7 +101,7 @@ class RLST(BaseFairseqModel):
         # In this case we'll just return a SimpleLSTMModel instance.
         source_vocab = task.source_dictionary
         target_vocab = task.target_dictionary
-        TESTING_EPISODE_MAX_TIME = 350
+        TESTING_EPISODE_MAX_TIME = 400
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         net = Net(
@@ -114,21 +114,7 @@ class RLST(BaseFairseqModel):
             embedding_dropout=args.embedding_dropout,
             rnn_num_layers=args.rnn_num_layers).to(device)
 
-        def init_uniform(m):
-            if hasattr(m, 'weight'):
-                nn.init.uniform_(m.weight, -0.01, 0.01)
-            if hasattr(m, 'bias') and not isinstance(m.bias, bool):
-                nn.init.uniform_(m.bias, -0.01, 0.01)
-            if hasattr(m, 'bias_hh_l0'):
-                nn.init.uniform_(m.bias_hh_l0, -0.01, 0.01)
-            if hasattr(m, 'bias_ih_l0'):
-                nn.init.uniform_(m.bias_ih_l0, -0.01, 0.01)
-            if hasattr(m, 'weight_hh_l0'):
-                nn.init.uniform_(m.weight_hh_l0, -0.01, 0.01)
-            if hasattr(m, 'weight_ih_l0'):
-                nn.init.uniform_(m.weight_ih_l0, -0.01, 0.01)
-        net.apply(init_uniform)
-        nn.init.uniform_(net.output.weight[-3:, :], -1, 1)
+        nn.init.constant_(net.output.bias[-3:], -10)
 
         model = RLST(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
                      source_vocab.eos_index,
@@ -288,6 +274,6 @@ def rlst(args):
     args.embedding_dropout = getattr(args, 'embedding_dropout', 0.0)
     args.src_embed_dim = getattr(args, 'src_embed_dim', 128)
     args.trg_embed_dim = getattr(args, 'trg_embed_dim', 128)
-    args.discount = getattr(args, 'discount', 0.75)
-    args.m = getattr(args, 'm', 10.0)
+    args.discount = getattr(args, 'discount', 0.90)
+    args.m = getattr(args, 'm', 8.0)
 

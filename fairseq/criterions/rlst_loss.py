@@ -23,11 +23,11 @@ class RLSTCriterionConfig(FairseqDataclass):
         metadata={"help": "N"},
     )
     epsilon: float = field(
-        default=0.15,
+        default=0.2,
         metadata={"help": "epsilon"},
     )
     teacher_forcing: float = field(
-        default=0.5,
+        default=1.0,
         metadata={"help": "teacher force"},
     )
     rho: float = field(

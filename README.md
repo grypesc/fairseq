@@ -21,7 +21,7 @@ CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --arch rls
 ```shell
 CUDA_VISIBLE_DEVICES=3 fairseq-train data-bin/iwslt14.tokenized.de-en --optimizer adam --lr 1e-3 --clip-norm 1.0  --max-tokens 4096 \
  --save-dir checkpoints/lstm/ --arch lstm_wiseman_iwslt_de_en --eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe \
- --best-checkpoint-metric bleu --maximize-best-checkpoint-metric
+ --eval-bleu-args '{"beam": 1}' --best-checkpoint-metric bleu --maximize-best-checkpoint-metric
 ```
 
 Fairseq(-py) is a sequence modeling toolkit that allows researchers and
