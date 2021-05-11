@@ -92,7 +92,7 @@ class RLSTCriterion(FairseqCriterion):
             "epsilon": self.epsilon
         }
 
-        return loss, sample_size, logging_output
+        return sample_size * loss, sample_size, logging_output
 
     def compute_loss(self, word_outputs, trg, Q_used, Q_target):
         if not self.training:
