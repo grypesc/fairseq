@@ -18,12 +18,12 @@ torch.set_printoptions(threshold=10_000)
 
 @dataclass
 class RLSTCriterionConfig(FairseqDataclass):
-    N: float = field(
-        default=100_000.0,
+    N: int = field(
+        default=100_000,
         metadata={"help": "N"},
     )
     epsilon: float = field(
-        default=0.2,
+        default=0.15,
         metadata={"help": "epsilon"},
     )
     teacher_forcing: float = field(

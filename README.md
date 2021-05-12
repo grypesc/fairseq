@@ -12,10 +12,10 @@
 Running RLST:
 ```shell
 CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --arch rlst --rnn_hid_dim 512 --rnn_num_layers 2 --rnn_dropout 0.2 \
---src_embed_dim 256 --trg_embed_dim 256  --embedding_dropout 0.0 --max-tokens 4096 --max-epoch 50 \
---optimizer adam --clip-norm 1.0 --lr 1e-3  --weight-decay 1e-6 --left-pad-source --warmup-updates 100 \
---criterion rlst_criterion --epsilon 0.15 --N 300000 --m 8.0 --discount 0.80 --validate-after-updates 20000\
---eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
+--src_embed_dim 256 --trg_embed_dim 256  --embedding_dropout 0.0 --max-tokens 4096 --max-epoch 100 \
+--optimizer adam --clip-norm 10.0 --lr 1e-3  --weight-decay 1e-5 --left-pad-source --warmup-updates 100 \
+--criterion rlst_criterion --teacher_forcing 1.0 --epsilon 0.15 --N 200000 --m 7.0 --discount 0.90 --eta-min 0.02 --eta-max 0.15 \
+--eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe --best-checkpoint-metric bleu --eval-bleu-args '{"beam": 1}' --maximize-best-checkpoint-metric \
 --save-dir checkpoints/rlst
 ```
 ```shell

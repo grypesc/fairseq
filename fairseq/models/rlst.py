@@ -114,7 +114,7 @@ class RLST(BaseFairseqModel):
             embedding_dropout=args.embedding_dropout,
             rnn_num_layers=args.rnn_num_layers).to(device)
 
-        nn.init.constant_(net.output.bias[-3:], -10)
+        # nn.init.constant_(net.output.bias[-3:], -10)
 
         model = RLST(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
                      source_vocab.eos_index,
