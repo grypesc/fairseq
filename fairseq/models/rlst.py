@@ -34,6 +34,139 @@ class Net(nn.Module):
         return outputs, rnn_state
 
 
+class Net2(nn.Module):
+    def __init__(self,
+                 src_vocab_len,
+                 trg_vocab_len,
+                 src_embed_dim,
+                 trg_embed_dim,
+                 rnn_hid_dim,
+                 rnn_dropout,
+                 embedding_dropout,
+                 rnn_num_layers,
+                 bottle_neck=512):
+        super().__init__()
+
+        self.rnn_hid_dim = rnn_hid_dim
+        self.rnn_num_layers = rnn_num_layers
+
+        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
+        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
+        self.embedding_dropout = nn.Dropout(embedding_dropout)
+
+        self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=rnn_dropout)
+        self.linear = nn.Linear(rnn_hid_dim, bottle_neck)
+        self.tanh = nn.Tanh()
+        self.output = nn.Linear(bottle_neck, trg_vocab_len + 3)
+
+    def forward(self, src, previous_output, rnn_state):
+        src_embedded = self.embedding_dropout(self.src_embedding(src))
+        trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
+        rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
+        rnn_output, rnn_state = self.rnn(rnn_input, rnn_state)
+        linear_out = self.tanh(self.linear(rnn_output))
+        linear_out = self.embedding_dropout(linear_out)
+        outputs = self.output(linear_out)
+        return outputs, rnn_state
+
+
+class ResidualApproximator(nn.Module):
+    """Bad boy."""
+
+    def __init__(self,
+                 src_vocab_len,
+                 trg_vocab_len,
+                 src_embed_dim,
+                 trg_embed_dim,
+                 rnn_hid_dim,
+                 rnn_dropout,
+                 embedding_dropout,
+                 rnn_num_layers):
+        super().__init__()
+
+        self.rnn_hid_dim = rnn_hid_dim
+        self.rnn_num_layers = rnn_num_layers
+        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
+        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
+        self.embedding_dropout = nn.Dropout(embedding_dropout)
+        assert src_embed_dim + trg_embed_dim == rnn_hid_dim
+        self.rnns = nn.ModuleList(
+            rnn_num_layers * [nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=1, dropout=0.0)])
+        self.rnn_dropout = nn.Dropout(rnn_dropout)
+        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
+
+    def forward(self, src, previous_output, rnn_states):
+        src_embedded = self.embedding_dropout(self.src_embedding(src))
+        trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
+
+        rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
+        rnn_new_states = torch.zeros(rnn_states.size(), device=src_embedded.device)
+        rnn_out = None
+        for i, rnn in enumerate(self.rnns):
+            rnn_out, rnn_new_state = self._skip_rep(rnn_input, rnn, rnn_states[i:i + 1])
+            rnn_out = self.rnn_dropout(rnn_out)
+            rnn_input = rnn_out
+            rnn_new_states[i, :] = rnn_new_state
+
+        outputs = self.output(rnn_out)
+        return outputs, rnn_new_states
+
+    def _skip_rep(self, input, rnn, rnn_state):
+        rnn_output, rnn_new_state = rnn(input, rnn_state)
+        return input + rnn_output, rnn_new_state
+
+
+class ResidualApproximator9000(nn.Module):
+    """Bad boy with policy coming straight from GRU hidden states."""
+
+    def __init__(self,
+                 src_vocab_len,
+                 trg_vocab_len,
+                 src_embed_dim,
+                 trg_embed_dim,
+                 rnn_hid_dim,
+                 rnn_dropout,
+                 embedding_dropout,
+                 rnn_num_layers):
+        super().__init__()
+
+        self.rnn_hid_dim = rnn_hid_dim
+        self.rnn_num_layers = rnn_num_layers
+        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
+        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
+        self.embedding_dropout = nn.Dropout(embedding_dropout)
+        assert src_embed_dim + trg_embed_dim == rnn_hid_dim
+        self.rnns = nn.ModuleList(rnn_num_layers * [nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=1, dropout=0.0)])
+        self.rnn_dropout = nn.Dropout(rnn_dropout)
+        self.policy_dropout = nn.Dropout(embedding_dropout)
+        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len)
+        self.policy_output = nn.Linear(rnn_num_layers * rnn_hid_dim, 3)
+
+    def forward(self, src, previous_output, rnn_states):
+        src_embedded = self.embedding_dropout(self.src_embedding(src))
+        trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
+
+        rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
+        rnn_new_states = torch.zeros(rnn_states.size(), device=src_embedded.device)
+        res_out = None
+
+        for i, rnn in enumerate(self.rnns):
+            res_out, rnn_new_state = self._skip_rep(rnn_input, rnn, rnn_states[i:i + 1])
+            res_out = self.rnn_dropout(res_out)
+            rnn_input = res_out
+            rnn_new_states[i, :] = rnn_new_state
+
+        word_outputs = self.output(res_out)
+        policy_output = self.policy_output(rnn_new_states.reshape(rnn_new_states.size()[1], self.rnn_num_layers * self.rnn_hid_dim)).unsqueeze_(0)
+        policy_output = self.policy_dropout(policy_output)
+        outputs = torch.cat((word_outputs, policy_output), dim=2)
+        return outputs, rnn_new_states
+
+    def _skip_rep(self, input, rnn, rnn_state):
+        rnn_output, rnn_new_state = rnn(input, rnn_state)
+        return input + rnn_output, rnn_new_state
+
+
 @register_model('rlst')
 class RLST(BaseFairseqModel):
     def __init__(self, net, device, testing_episode_max_time, trg_vocab_len, discount, m,
@@ -104,7 +237,7 @@ class RLST(BaseFairseqModel):
         TESTING_EPISODE_MAX_TIME = 400
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        net = Net(
+        net = ResidualApproximator9000(
             src_vocab_len=len(source_vocab.symbols),
             trg_vocab_len=len(target_vocab.symbols),
             src_embed_dim=args.src_embed_dim,
@@ -272,8 +405,8 @@ def rlst(args):
     args.rnn_num_layers = getattr(args, 'rnn_num_layers', 1)
     args.rnn_dropout = getattr(args, 'rnn_dropout', 0.0)
     args.embedding_dropout = getattr(args, 'embedding_dropout', 0.0)
-    args.src_embed_dim = getattr(args, 'src_embed_dim', 128)
-    args.trg_embed_dim = getattr(args, 'trg_embed_dim', 128)
+    args.src_embed_dim = getattr(args, 'src_embed_dim', 256)
+    args.trg_embed_dim = getattr(args, 'trg_embed_dim', 256)
     args.discount = getattr(args, 'discount', 0.90)
-    args.m = getattr(args, 'm', 8.0)
+    args.m = getattr(args, 'm', 7.0)
 
