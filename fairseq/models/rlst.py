@@ -34,7 +34,7 @@ class Net(nn.Module):
         return outputs, rnn_state
 
 
-class Net2(nn.Module):
+class LeakyNet(nn.Module):
     def __init__(self,
                  src_vocab_len,
                  trg_vocab_len,
@@ -55,16 +55,16 @@ class Net2(nn.Module):
         self.embedding_dropout = nn.Dropout(embedding_dropout)
 
         self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=rnn_dropout)
-        self.linear = nn.Linear(rnn_hid_dim, bottle_neck)
-        self.tanh = nn.Tanh()
-        self.output = nn.Linear(bottle_neck, trg_vocab_len + 3)
+        self.linear = nn.Linear(rnn_hid_dim, rnn_hid_dim)
+        self.relu = nn.LeakyReLU()
+        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
 
     def forward(self, src, previous_output, rnn_state):
         src_embedded = self.embedding_dropout(self.src_embedding(src))
         trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
         rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
         rnn_output, rnn_state = self.rnn(rnn_input, rnn_state)
-        linear_out = self.tanh(self.linear(rnn_output))
+        linear_out = self.relu(self.linear(rnn_output))
         linear_out = self.embedding_dropout(linear_out)
         outputs = self.output(linear_out)
         return outputs, rnn_state
@@ -237,7 +237,7 @@ class RLST(BaseFairseqModel):
         TESTING_EPISODE_MAX_TIME = 400
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        net = ResidualApproximator9000(
+        net = LeakyNet(
             src_vocab_len=len(source_vocab.symbols),
             trg_vocab_len=len(target_vocab.symbols),
             src_embed_dim=args.src_embed_dim,
