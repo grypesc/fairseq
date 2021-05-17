@@ -43,8 +43,7 @@ class LeakyNet(nn.Module):
                  rnn_hid_dim,
                  rnn_dropout,
                  embedding_dropout,
-                 rnn_num_layers,
-                 bottle_neck=512):
+                 rnn_num_layers):
         super().__init__()
 
         self.rnn_hid_dim = rnn_hid_dim
@@ -116,8 +115,7 @@ class ResidualApproximator(nn.Module):
         return input + rnn_output, rnn_new_state
 
 
-class ResidualApproximator9000(nn.Module):
-    """Bad boy with policy coming straight from GRU hidden states."""
+class LeakyResidualApproximator(nn.Module):
 
     def __init__(self,
                  src_vocab_len,
@@ -135,34 +133,29 @@ class ResidualApproximator9000(nn.Module):
         self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
         self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
         self.embedding_dropout = nn.Dropout(embedding_dropout)
-        assert src_embed_dim + trg_embed_dim == rnn_hid_dim
-        self.rnns = nn.ModuleList(rnn_num_layers * [nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=1, dropout=0.0)])
-        self.rnn_dropout = nn.Dropout(rnn_dropout)
-        self.policy_dropout = nn.Dropout(embedding_dropout)
-        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len)
-        self.policy_output = nn.Linear(rnn_num_layers * rnn_hid_dim, 3)
+        self.embedding_linear = nn.Linear(src_embed_dim + trg_embed_dim, rnn_hid_dim)
+        self.rnns = nn.ModuleList(rnn_num_layers * [nn.GRU(rnn_hid_dim, rnn_hid_dim)])
+        self.linear = nn.Linear(rnn_hid_dim, rnn_hid_dim)
+        self.activation = nn.LeakyReLU()
+        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
 
     def forward(self, src, previous_output, rnn_states):
         src_embedded = self.embedding_dropout(self.src_embedding(src))
         trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
 
-        rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
+        rnn_input = self.activation(self.embedding_linear(torch.cat((src_embedded, trg_embedded), dim=2)))
         rnn_new_states = torch.zeros(rnn_states.size(), device=src_embedded.device)
         res_out = None
-
         for i, rnn in enumerate(self.rnns):
-            res_out, rnn_new_state = self._skip_rep(rnn_input, rnn, rnn_states[i:i + 1])
-            res_out = self.rnn_dropout(res_out)
+            res_out, rnn_new_states[i, :] = self._skip_rep(rnn_input, rnn, rnn_states[i:i + 1])
             rnn_input = res_out
-            rnn_new_states[i, :] = rnn_new_state
 
-        word_outputs = self.output(res_out)
-        policy_output = self.policy_output(rnn_new_states.reshape(rnn_new_states.size()[1], self.rnn_num_layers * self.rnn_hid_dim)).unsqueeze_(0)
-        policy_output = self.policy_dropout(policy_output)
-        outputs = torch.cat((word_outputs, policy_output), dim=2)
+        leaky_output = self.activation(self.linear(res_out))
+        outputs = self.output(leaky_output)
         return outputs, rnn_new_states
 
-    def _skip_rep(self, input, rnn, rnn_state):
+    @staticmethod
+    def _skip_rep(input, rnn, rnn_state):
         rnn_output, rnn_new_state = rnn(input, rnn_state)
         return input + rnn_output, rnn_new_state
 
@@ -237,7 +230,7 @@ class RLST(BaseFairseqModel):
         TESTING_EPISODE_MAX_TIME = 400
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        net = LeakyNet(
+        net = LeakyResidualApproximator(
             src_vocab_len=len(source_vocab.symbols),
             trg_vocab_len=len(target_vocab.symbols),
             src_embed_dim=args.src_embed_dim,
