@@ -87,7 +87,7 @@ class RLSTCriterion(FairseqCriterion):
             "sample_size": sample_size,
             "actions": actions.data,
             "mistranslation_loss": mistranslation_loss.data,
-            "policy_loss": policy_loss.data,
+            "policy_loss": policy_loss.data if self.training else -1.0,
             "policy_multiplier": self.policy_multiplier,
             "epsilon": self.epsilon
         }
