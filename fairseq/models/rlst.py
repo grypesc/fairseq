@@ -230,7 +230,7 @@ class RLST(BaseFairseqModel):
         TESTING_EPISODE_MAX_TIME = 400
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        net = LeakyResidualApproximator(
+        net = LeakyNet(
             src_vocab_len=len(source_vocab.symbols),
             trg_vocab_len=len(target_vocab.symbols),
             src_embed_dim=args.src_embed_dim,

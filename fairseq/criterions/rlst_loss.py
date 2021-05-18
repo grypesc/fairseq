@@ -85,9 +85,9 @@ class RLSTCriterion(FairseqCriterion):
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
-            "actions": actions,
-            "mistranslation_loss": mistranslation_loss,
-            "policy_loss": policy_loss,
+            "actions": actions.data,
+            "mistranslation_loss": mistranslation_loss.data,
+            "policy_loss": policy_loss.data,
             "policy_multiplier": self.policy_multiplier,
             "epsilon": self.epsilon
         }
