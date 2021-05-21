@@ -23,7 +23,7 @@ TEXT=examples/translation/iwslt14.tokenized.de-en
 fairseq-preprocess --source-lang de --target-lang en \
     --trainpref $TEXT/train --validpref $TEXT/valid --testpref $TEXT/test \
     --destdir data-bin/iwslt14.tokenized.de-en \
-    --workers 20 --nwordssrc=12000 --nwordstrg=12000
+    --workers 20
 ```
 
 Running RLST:
