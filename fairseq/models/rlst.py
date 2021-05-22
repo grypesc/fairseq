@@ -38,12 +38,13 @@ class LeakyNet(nn.Module):
     def __init__(self,
                  src_vocab_len,
                  trg_vocab_len,
-                 src_embed_dim,
-                 trg_embed_dim,
                  rnn_hid_dim,
                  rnn_dropout,
-                 embedding_dropout,
-                 rnn_num_layers):
+                 rnn_num_layers,
+                 src_embed_dim=256,
+                 trg_embed_dim=256,
+                 embedding_dropout=0.0,
+                 ):
         super().__init__()
 
         self.rnn_hid_dim = rnn_hid_dim
@@ -52,10 +53,10 @@ class LeakyNet(nn.Module):
         self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
         self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
         self.embedding_dropout = nn.Dropout(embedding_dropout)
-
-        self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=rnn_dropout)
+        self.rnn_dropout = nn.Dropout(rnn_dropout)
+        self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, dropout=0.0)
         self.linear = nn.Linear(rnn_hid_dim, rnn_hid_dim)
-        self.relu = nn.LeakyReLU()
+        self.activation = nn.LeakyReLU()
         self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
 
     def forward(self, src, previous_output, rnn_state):
@@ -63,9 +64,9 @@ class LeakyNet(nn.Module):
         trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
         rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
         rnn_output, rnn_state = self.rnn(rnn_input, rnn_state)
-        linear_out = self.relu(self.linear(rnn_output))
-        linear_out = self.embedding_dropout(linear_out)
-        outputs = self.output(linear_out)
+        leaky_out = self.activation(self.linear(rnn_output))
+        leaky_out = self.rnn_dropout(leaky_out)
+        outputs = self.output(leaky_out)
         return outputs, rnn_state
 
 
@@ -240,7 +241,7 @@ class RLST(BaseFairseqModel):
             embedding_dropout=args.embedding_dropout,
             rnn_num_layers=args.rnn_num_layers).to(device)
 
-        nn.init.constant_(net.output.bias[-3:], -10)
+        # nn.init.constant_(net.output.bias[-3:], -10)
 
         model = RLST(net, device, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
                      source_vocab.eos_index,
@@ -394,12 +395,12 @@ def rlst(args):
     # We use ``getattr()`` to prioritize arguments that are explicitly given
     # on the command-line, so that the defaults defined below are only used
     # when no other value has been specified.
-    args.rnn_hid_dim = getattr(args, 'rnn_hid_dim', 256)
-    args.rnn_num_layers = getattr(args, 'rnn_num_layers', 1)
+    args.rnn_hid_dim = getattr(args, 'rnn_hid_dim', 768)
+    args.rnn_num_layers = getattr(args, 'rnn_num_layers', 2)
     args.rnn_dropout = getattr(args, 'rnn_dropout', 0.0)
     args.embedding_dropout = getattr(args, 'embedding_dropout', 0.0)
     args.src_embed_dim = getattr(args, 'src_embed_dim', 256)
     args.trg_embed_dim = getattr(args, 'trg_embed_dim', 256)
-    args.discount = getattr(args, 'discount', 0.90)
+    args.discount = getattr(args, 'discount', 0.75)
     args.m = getattr(args, 'm', 7.0)
 
