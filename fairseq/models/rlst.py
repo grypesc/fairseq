@@ -5,36 +5,8 @@ import torch.nn as nn
 from fairseq.models import BaseFairseqModel, register_model, register_model_architecture
 
 
-class Net(nn.Module):
-    def __init__(self,
-                 src_vocab_len,
-                 trg_vocab_len,
-                 src_embed_dim,
-                 trg_embed_dim,
-                 rnn_hid_dim,
-                 rnn_dropout,
-                 embedding_dropout,
-                 rnn_num_layers):
-        super().__init__()
+class MoneyShot(nn.Module):
 
-        self.rnn_hid_dim = rnn_hid_dim
-        self.rnn_num_layers = rnn_num_layers
-        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
-        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
-        self.embedding_dropout = nn.Dropout(embedding_dropout)
-        self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, bidirectional=False, dropout=rnn_dropout)
-        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
-
-    def forward(self, src, previous_output, rnn_state):
-        src_embedded = self.embedding_dropout(self.src_embedding(src))
-        trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
-        rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
-        rnn_output, rnn_state = self.rnn(rnn_input, rnn_state)
-        outputs = self.output(rnn_output)
-        return outputs, rnn_state
-
-
-class LeakyNet(nn.Module):
     def __init__(self,
                  src_vocab_len,
                  trg_vocab_len,
@@ -43,115 +15,43 @@ class LeakyNet(nn.Module):
                  rnn_num_layers,
                  src_embed_dim=256,
                  trg_embed_dim=256,
-                 embedding_dropout=0.0,
-                 ):
+                 embedding_dropout=0.0):
         super().__init__()
 
         self.rnn_hid_dim = rnn_hid_dim
         self.rnn_num_layers = rnn_num_layers
-
         self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
+        self.src_leaky = nn.Linear(src_embed_dim, rnn_hid_dim)
         self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
+        self.trg_leaky = nn.Linear(trg_embed_dim, rnn_hid_dim)
         self.embedding_dropout = nn.Dropout(embedding_dropout)
         self.rnn_dropout = nn.Dropout(rnn_dropout)
-        self.rnn = nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, dropout=0.0)
-        self.linear = nn.Linear(rnn_hid_dim, rnn_hid_dim)
-        self.activation = nn.LeakyReLU()
-        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
 
-    def forward(self, src, previous_output, rnn_state):
-        src_embedded = self.embedding_dropout(self.src_embedding(src))
-        trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
-        rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
-        rnn_output, rnn_state = self.rnn(rnn_input, rnn_state)
-        leaky_out = self.activation(self.linear(rnn_output))
-        leaky_out = self.rnn_dropout(leaky_out)
-        outputs = self.output(leaky_out)
-        return outputs, rnn_state
-
-
-class ResidualApproximator(nn.Module):
-    """Bad boy."""
-
-    def __init__(self,
-                 src_vocab_len,
-                 trg_vocab_len,
-                 src_embed_dim,
-                 trg_embed_dim,
-                 rnn_hid_dim,
-                 rnn_dropout,
-                 embedding_dropout,
-                 rnn_num_layers):
-        super().__init__()
-
-        self.rnn_hid_dim = rnn_hid_dim
-        self.rnn_num_layers = rnn_num_layers
-        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
-        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
-        self.embedding_dropout = nn.Dropout(embedding_dropout)
-        assert src_embed_dim + trg_embed_dim == rnn_hid_dim
-        self.rnns = nn.ModuleList(
-            rnn_num_layers * [nn.GRU(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=1, dropout=0.0)])
-        self.rnn_dropout = nn.Dropout(rnn_dropout)
-        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
-
-    def forward(self, src, previous_output, rnn_states):
-        src_embedded = self.embedding_dropout(self.src_embedding(src))
-        trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
-
-        rnn_input = torch.cat((src_embedded, trg_embedded), dim=2)
-        rnn_new_states = torch.zeros(rnn_states.size(), device=src_embedded.device)
-        rnn_out = None
-        for i, rnn in enumerate(self.rnns):
-            rnn_out, rnn_new_state = self._skip_rep(rnn_input, rnn, rnn_states[i:i + 1])
-            rnn_out = self.rnn_dropout(rnn_out)
-            rnn_input = rnn_out
-            rnn_new_states[i, :] = rnn_new_state
-
-        outputs = self.output(rnn_out)
-        return outputs, rnn_new_states
-
-    def _skip_rep(self, input, rnn, rnn_state):
-        rnn_output, rnn_new_state = rnn(input, rnn_state)
-        return input + rnn_output, rnn_new_state
-
-
-class LeakyResidualApproximator(nn.Module):
-
-    def __init__(self,
-                 src_vocab_len,
-                 trg_vocab_len,
-                 src_embed_dim,
-                 trg_embed_dim,
-                 rnn_hid_dim,
-                 rnn_dropout,
-                 embedding_dropout,
-                 rnn_num_layers):
-        super().__init__()
-
-        self.rnn_hid_dim = rnn_hid_dim
-        self.rnn_num_layers = rnn_num_layers
-        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
-        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
-        self.embedding_dropout = nn.Dropout(embedding_dropout)
-        self.embedding_linear = nn.Linear(src_embed_dim + trg_embed_dim, rnn_hid_dim)
         self.rnns = nn.ModuleList(rnn_num_layers * [nn.GRU(rnn_hid_dim, rnn_hid_dim)])
-        self.linear = nn.Linear(rnn_hid_dim, rnn_hid_dim)
+        self.linear = nn.Linear(rnn_hid_dim, 512)
         self.activation = nn.LeakyReLU()
-        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 3)
+        self.rnn_dropout = nn.Dropout(rnn_dropout)
+        self.output = nn.Linear(512, trg_vocab_len + 2)
 
     def forward(self, src, previous_output, rnn_states):
         src_embedded = self.embedding_dropout(self.src_embedding(src))
-        trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
+        src_embedded = self.activation(self.src_leaky(src_embedded))
+        src_embedded = self.rnn_dropout(src_embedded)
 
-        rnn_input = self.activation(self.embedding_linear(torch.cat((src_embedded, trg_embedded), dim=2)))
+        trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
+        trg_embedded = self.activation(self.trg_leaky(trg_embedded))
+        trg_embedded = self.rnn_dropout(trg_embedded)
+
+        rnn_input = src_embedded
         rnn_new_states = torch.zeros(rnn_states.size(), device=src_embedded.device)
         res_out = None
         for i, rnn in enumerate(self.rnns):
             res_out, rnn_new_states[i, :] = self._skip_rep(rnn_input, rnn, rnn_states[i:i + 1])
             rnn_input = res_out
+            if self.rnn_num_layers / (i + 1) == 2:
+                rnn_input += trg_embedded
 
-        leaky_output = self.activation(self.linear(res_out))
+        leaky_output = self.rnn_dropout(self.activation(self.linear(res_out)))
         outputs = self.output(leaky_output)
         return outputs, rnn_new_states
 
@@ -231,7 +131,7 @@ class RLST(BaseFairseqModel):
         TESTING_EPISODE_MAX_TIME = 400
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        net = LeakyNet(
+        net = MoneyShot(
             src_vocab_len=len(source_vocab.symbols),
             trg_vocab_len=len(target_vocab.symbols),
             src_embed_dim=args.src_embed_dim,
@@ -284,14 +184,14 @@ class RLST(BaseFairseqModel):
             input[writing_agents] = self.SRC_NULL
             input[naughty_agents] = self.SRC_EOS
             output, rnn_state = self.net(input, word_output, rnn_state)
-            _, word_output = torch.max(output[:, :, :-3], dim=2)
-            action = torch.max(output[:, :, -3:], 2)[1]
+            _, word_output = torch.max(output[:, :, :-2], dim=2)
+            action = torch.max(output[:, :, -2:], 2)[1]
 
             random_action_agents = torch.rand((1, batch_size), device=device) < epsilon
-            random_action = torch.randint(low=0, high=3, size=(1, batch_size), device=device)
+            random_action = torch.randint(low=0, high=2, size=(1, batch_size), device=device)
             action[random_action_agents] = random_action[random_action_agents]
 
-            Q_used[t, :] = torch.gather(output[0, :, -3:], 1, action.T).squeeze_(1)
+            Q_used[t, :] = torch.gather(output[0, :, -2:], 1, action.T).squeeze_(1)
             Q_used[t, terminated_agents.squeeze(0)] = 0
 
             with torch.no_grad():
@@ -304,7 +204,7 @@ class RLST(BaseFairseqModel):
                 actions_count[2] += bothing_agents.sum()
 
             agents_outputting = writing_agents + bothing_agents
-            word_outputs[j[agents_outputting], agents_outputting.squeeze(0), :] = output[0, agents_outputting.squeeze(0), :-3]
+            word_outputs[j[agents_outputting], agents_outputting.squeeze(0), :] = output[0, agents_outputting.squeeze(0), :-2]
 
             just_terminated_agents = agents_outputting * (torch.gather(trg, 0, j) == self.TRG_EOS).squeeze_(0)
             naughty_agents = (reading_agents + bothing_agents) * (torch.gather(src, 0, i) == self.SRC_EOS).squeeze_(0)
@@ -326,9 +226,9 @@ class RLST(BaseFairseqModel):
                 _input[writing_agents] = self.SRC_NULL
                 _input[naughty_agents] = self.SRC_EOS
                 _output, _ = self.net(_input, word_output, rnn_state)
-                next_best_action_value, _ = torch.max(_output[:, :, -3:], 2)
+                next_best_action_value, _ = torch.max(_output[:, :, -2:], 2)
 
-                reward = (-1) * self.mistranslation_loss_per_word(output[0, :, :-3], torch.gather(trg, 0, old_j)[0, :]).unsqueeze(0)
+                reward = (-1) * self.mistranslation_loss_per_word(output[0, :, :-2], torch.gather(trg, 0, old_j)[0, :]).unsqueeze(0)
                 Q_target[t, :] = reward + self.DISCOUNT * next_best_action_value
                 Q_target[t, terminated_agents.squeeze(0)] = 0
                 Q_target[t, reading_agents.squeeze(0)] = next_best_action_value[reading_agents]
@@ -363,8 +263,8 @@ class RLST(BaseFairseqModel):
             input[writing_agents] = self.SRC_NULL
             input[naughty_agents] = self.SRC_EOS
             output, rnn_state = self.net(input, word_output, rnn_state)
-            _, word_output = torch.max(output[:, :, :-3], dim=2)
-            action = torch.max(output[:, :, -3:], 2)[1]
+            _, word_output = torch.max(output[:, :, :-2], dim=2)
+            action = torch.max(output[:, :, -2:], 2)[1]
 
             reading_agents = (action == 0)
             writing_agents = (action == 1)
@@ -375,7 +275,7 @@ class RLST(BaseFairseqModel):
             actions_count[2] += (~after_eos_agents * bothing_agents).sum()
 
             agents_outputting = writing_agents + bothing_agents
-            word_outputs[j[agents_outputting], agents_outputting.squeeze(0), :] = output[0, agents_outputting.squeeze(0), :-3]
+            word_outputs[j[agents_outputting], agents_outputting.squeeze(0), :] = output[0, agents_outputting.squeeze(0), :-2]
 
             after_eos_agents += (word_output == self.TRG_EOS)
             naughty_agents = (reading_agents + bothing_agents) * (torch.gather(src, 0, i) == self.SRC_EOS).squeeze_(0)
