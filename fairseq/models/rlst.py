@@ -60,7 +60,7 @@ class LeakyResidualApproximator(nn.Module):
         self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
         self.embedding_dropout = nn.Dropout(embedding_dropout)
         self.embedding_linear = nn.Linear(src_embed_dim + trg_embed_dim, rnn_hid_dim)
-        self.rnns = nn.ModuleList(rnn_num_layers * [nn.GRU(rnn_hid_dim, rnn_hid_dim)])
+        self.rnns = nn.ModuleList([nn.GRU(rnn_hid_dim, rnn_hid_dim) for _ in range(rnn_num_layers)])
         self.linear = nn.Linear(rnn_hid_dim, rnn_hid_dim)
         self.activation = nn.LeakyReLU()
         self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 2)
@@ -108,7 +108,7 @@ class MoneyShot(nn.Module):
         self.embedding_dropout = nn.Dropout(embedding_dropout)
         self.rnn_dropout = nn.Dropout(rnn_dropout)
 
-        self.rnns = nn.ModuleList(rnn_num_layers * [nn.GRU(rnn_hid_dim, rnn_hid_dim)])
+        self.rnns = nn.ModuleList([nn.GRU(rnn_hid_dim, rnn_hid_dim) for _ in range(rnn_num_layers)])
         self.linear = nn.Linear(rnn_hid_dim, rnn_hid_dim)
         self.activation = nn.LeakyReLU()
         self.rnn_dropout = nn.Dropout(rnn_dropout)
