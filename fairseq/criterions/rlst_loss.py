@@ -65,21 +65,30 @@ class RLSTCriterion(FairseqCriterion):
         self.teacher_forcing = teacher_forcing
         self.eta_min = eta_min
         self.eta_max = eta_max
+        self.optimizer = None
 
     def forward(self, model, sample, reduce=True):
-        """Compute the loss for the given sample.
-
-        Returns a tuple with three elements:
-        1) the loss
-        2) the sample size, which is used as the denominator for the gradient
-        3) logging outputs to display while training
         """
+        Ok, so we are bringing our own Adam
+        """
+        if not self.optimizer:
+            self.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
         src_tokens = sample["net_input"]["src_tokens"]
         trg_tokens = sample["target"]
         src_tokens = src_tokens.T.contiguous()
         trg_tokens = trg_tokens.T.contiguous()
         word_outputs, Q_used, Q_target, actions = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing)
-        loss, mistranslation_loss, policy_loss, _ = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
+
+        if self.training:
+            self.optimizer.zero_grad()
+            loss, mistranslation_loss, policy_loss, _ = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+        else:
+            loss, mistranslation_loss, policy_loss, _ = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
+
         sample_size = (sample["target"].size(0) if self.sentence_avg else sample["ntokens"])
         logging_output = {
             "ntokens": sample["ntokens"],
@@ -91,8 +100,11 @@ class RLSTCriterion(FairseqCriterion):
             "policy_multiplier": self.policy_multiplier,
             "epsilon": self.epsilon
         }
-
-        return sample_size * loss, sample_size, logging_output
+        # Fooling fairseq optimizer with fake graph
+        input = torch.randn(3, 5, requires_grad=True)
+        target = torch.randn(3, 5)
+        output = self.policy_criterion(input, target)
+        return output, sample_size, logging_output
 
     def compute_loss(self, word_outputs, trg, Q_used, Q_target):
         if not self.training:
