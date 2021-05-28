@@ -29,9 +29,9 @@ fairseq-preprocess --source-lang de --target-lang en \
 Running RLST:
 ```shell
 CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --arch rlst --rnn_hid_dim 768 --rnn_num_layers 2 --rnn_dropout 0.0 \
---src_embed_dim 256 --trg_embed_dim 256  --embedding_dropout 0.2 --max-tokens 4096 --max-epoch 50 \
---optimizer adam --clip-norm 10.0 --lr 1e-3  --weight-decay 1e-5 --left-pad-source --warmup-updates 100 \
---criterion rlst_criterion --teacher-forcing 0.5 --epsilon 0.15 --N 100000 --m 7.0 --discount 0.90 --eta-min 0.02 --eta-max 0.2 \
+--src_embed_dim 256 --trg_embed_dim 256  --embedding_dropout 0.0 --max-tokens 4096 --max-epoch 80 \
+--optimizer adam --clip-norm 10.0 --lr 1e-3  --weight-decay 1e-5 --left-pad-source --rho 0.99 \
+--criterion rlst_criterion --teacher-forcing 0.5 --epsilon 0.3 --N 100000 --m 7.0 --discount 0.90 --eta-min 0.02 --eta-max 0.2 \
 --eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe --best-checkpoint-metric bleu --eval-bleu-args '{"beam": 1}' --maximize-best-checkpoint-metric \
 --save-dir checkpoints/rlst
 ```
