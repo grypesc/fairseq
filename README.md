@@ -9,12 +9,22 @@
 </p>
 
 --------------------------------------------------------------------------------
-In order to install this benchmark follow instructions from official repository:
-https://github.com/pytorch/fairseq
+# Requirements and Installation
 
+* [PyTorch](http://pytorch.org/) version >= 1.5.0
+* Python version >= 3.6
+* For training new models, you'll also need an NVIDIA GPU and [NCCL](https://github.com/NVIDIA/nccl)
+* **To install this version of fairseq** go to repository root level and run:
 
-In order to repeat results from the paper:
-Firstly, download and preprocess the data:
+``` bash
+pip install --editable ./
+
+# on MacOS:
+# CFLAGS="-stdlib=libc++" pip install --editable ./
+```
+
+In order to repeat results from the Reinforcement Learning for on-line Sequence Transformation paper:  
+Download and preprocess the data:
 ```bash
 # Download and prepare the data
 cd examples/translation/
@@ -31,7 +41,7 @@ fairseq-preprocess --source-lang de --target-lang en \
 ```
 This preprocesses data for German-English translation. To train and evaluate English-German translation models, switch `--source-lang` and `--target-lang` values in `fairseq-preprocess` command. 
 
-Running RLST:
+Training RLST:
 ```shell
 CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --arch rlst --rnn_hid_dim 768 --rnn_num_layers 4 --rnn_dropout 0.5 \
 --src_embed_dim 256 --trg_embed_dim 256  --embedding_dropout 0.2 --max-tokens 4096 --max-epoch 100 \
@@ -56,7 +66,11 @@ CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --optimize
 --max-epoch 100
 ```
 
-All trained models can be evaluated on the test set using the `fairseq-generate` command:
+Trained lstm and transformer models can be evaluated on the test set using the `fairseq-generate` command:
+```shell
+CUDA_VISIBLE_DEVICES=0 fairseq-generate data-bin/iwslt14.tokenized.de-en/ --path <path to model checkpoints directory>/checkpoint_best.pt --beam 1 --remove-bpe --quiet
+```
+To test RLST you also need to provide ```--left-pad-source``` flag:
 ```shell
 CUDA_VISIBLE_DEVICES=0 fairseq-generate data-bin/iwslt14.tokenized.de-en/ --path <path to model checkpoints directory>/checkpoint_best.pt --beam 1 --remove-bpe --quiet --left-pad-source
 ```
