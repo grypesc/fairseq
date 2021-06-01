@@ -143,7 +143,7 @@ class RLSTCriterion(FairseqCriterion):
         metrics.log_scalar("loss", mistranslation_loss, sample_size, round=3, priority=0)
         metrics.log_derived("ppl", lambda meters: utils.get_perplexity(meters["loss"].avg, round=2, base=math.e), priority=1)
         metrics.log_scalar("policy_loss", policy_loss, sample_size, round=2, priority=2)
-        metrics.log_scalar("plm", policy_multiplier, round=2, priority=3)
+        metrics.log_scalar("eta", policy_multiplier, round=2, priority=3)
         metrics.log_scalar("eps", epsilon, round=2, priority=4)
         metrics.log_scalar("reads", actions_ratio[0], round=2, priority=5)
         metrics.log_scalar("writes", actions_ratio[1], round=2, priority=6)

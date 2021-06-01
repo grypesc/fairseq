@@ -71,7 +71,7 @@ class LeakyResidualApproximator(nn.Module):
         trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
 
         rnn_input = self.activation(self.embedding_linear(torch.cat((src_embedded, trg_embedded), dim=2)))
-        rnn_input = self.embedding_dropout(rnn_input)
+        # rnn_input = self.embedding_dropout(rnn_input)
         rnn_new_states = torch.zeros(rnn_states.size(), device=src_embedded.device)
         res_out = None
         for i, rnn in enumerate(self.rnns):
