@@ -71,7 +71,7 @@ class LeakyResidualApproximator(nn.Module):
         trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
 
         rnn_input = self.activation(self.embedding_linear(torch.cat((src_embedded, trg_embedded), dim=2)))
-        # rnn_input = self.embedding_dropout(rnn_input)
+        rnn_input = self.embedding_dropout(rnn_input)
         rnn_new_states = torch.zeros(rnn_states.size(), device=src_embedded.device)
         res_out = None
         for i, rnn in enumerate(self.rnns):
@@ -193,12 +193,10 @@ class RLST(BaseFairseqModel):
         word_output = torch.full((1, batch_size), int(self.TRG_NULL), device=device)
         rnn_state = torch.zeros((self.net.rnn_num_layers, batch_size, self.net.rnn_hid_dim), device=device)
 
-        word_outputs = torch.zeros((trg_seq_len, batch_size, self.trg_vocab_len), device=device)
+        token_probs = torch.zeros((trg_seq_len, batch_size, self.trg_vocab_len), device=device)
         Q_used = torch.zeros((src_seq_len + trg_seq_len - 1, batch_size), device=device)
-        Q_target = torch.zeros((src_seq_len + trg_seq_len - 1, batch_size), device=device)
+        Q_target = torch.zeros((src_seq_len + trg_seq_len - 1, batch_size), device=device, requires_grad=False)
 
-        writing_agents = torch.full((1, batch_size), False, device=device, requires_grad=False)
-        naughty_agents = torch.full((1, batch_size,), False, device=device, requires_grad=False)  # Want more input after input eos
         terminated_agents = torch.full((1, batch_size,), False, device=device, requires_grad=False)
 
         i = torch.zeros(size=(1, batch_size), dtype=torch.long, device=device, requires_grad=False)  # input indices
@@ -206,14 +204,12 @@ class RLST(BaseFairseqModel):
         t = 0  # time
         actions_count = torch.zeros(3, dtype=torch.long, device=device, requires_grad=False)
 
-        while True:
-            input = torch.gather(src, 0, i)
-            input[writing_agents] = self.SRC_NULL
-            input[naughty_agents] = self.SRC_EOS
-            output, rnn_state = self.net(input, word_output, rnn_state)
-            _, word_output = torch.max(output[:, :, :-2], dim=2)
-            action = torch.max(output[:, :, -2:], 2)[1]
+        input = torch.gather(src, 0, i)
+        output, rnn_state = self.net(input, word_output, rnn_state)
+        action = torch.max(output[:, :, -2:], 2)[1]
 
+        while True:
+            _, word_output = torch.max(output[:, :, :-2], dim=2)
             random_action_agents = torch.rand((1, batch_size), device=device) < epsilon
             random_action = torch.randint(low=0, high=2, size=(1, batch_size), device=device)
             action[random_action_agents] = random_action[random_action_agents]
@@ -224,38 +220,32 @@ class RLST(BaseFairseqModel):
             with torch.no_grad():
                 reading_agents = ~terminated_agents * (action == 0)
                 writing_agents = ~terminated_agents * (action == 1)
-                bothing_agents = ~terminated_agents * (action == 2)
 
                 actions_count[0] += reading_agents.sum()
                 actions_count[1] += writing_agents.sum()
-                actions_count[2] += bothing_agents.sum()
 
-            agents_outputting = writing_agents + bothing_agents
-            word_outputs[j[agents_outputting], agents_outputting.squeeze(0), :] = output[0, agents_outputting.squeeze(0), :-2]
+                just_terminated_agents = writing_agents * (torch.gather(trg, 0, j) == self.TRG_EOS).squeeze_(0)
+                naughty_agents = reading_agents * (torch.gather(src, 0, i) == self.SRC_EOS).squeeze_(0)
+                i = i + ~naughty_agents * reading_agents
+                old_j = j
+                j = j + writing_agents * ~just_terminated_agents
+                terminated_agents = terminated_agents + just_terminated_agents
 
-            just_terminated_agents = agents_outputting * (torch.gather(trg, 0, j) == self.TRG_EOS).squeeze_(0)
-            naughty_agents = (reading_agents + bothing_agents) * (torch.gather(src, 0, i) == self.SRC_EOS).squeeze_(0)
-            i = i + ~naughty_agents * (reading_agents + bothing_agents)
-            old_j = j
-            j = j + agents_outputting
-
-            terminated_agents = terminated_agents + just_terminated_agents
-
-            i[i >= src_seq_len] = src_seq_len - 1
-            j[j >= trg_seq_len] = trg_seq_len - 1
-
-            if random.random() < teacher_forcing:
-                word_output = torch.gather(trg, 0, old_j)
-            word_output[reading_agents] = self.TRG_NULL
-
-            with torch.no_grad():
-                _input = torch.gather(src, 0, i)
-                _input[writing_agents] = self.SRC_NULL
-                _input[naughty_agents] = self.SRC_EOS
-                _output, _ = self.net(_input, word_output, rnn_state)
-                next_best_action_value, _ = torch.max(_output[:, :, -2:], 2)
+                if random.random() < teacher_forcing:
+                    word_output = torch.gather(trg, 0, old_j)
+                word_output[reading_agents] = self.TRG_NULL
 
                 reward = (-1) * self.mistranslation_loss_per_word(output[0, :, :-2], torch.gather(trg, 0, old_j)[0, :]).unsqueeze(0)
+
+            token_probs[old_j[writing_agents], writing_agents.squeeze(0), :] = output[0, writing_agents.squeeze(0), :-2]
+
+            input = torch.gather(src, 0, i)
+            input[writing_agents] = self.SRC_NULL
+            input[naughty_agents] = self.SRC_EOS
+            output, rnn_state = self.net(input, word_output, rnn_state)
+            next_best_action_value, action = torch.max(output[:, :, -2:], 2)
+
+            with torch.no_grad():
                 Q_target[t, :] = reward + self.DISCOUNT * next_best_action_value
                 Q_target[t, terminated_agents.squeeze(0)] = 0
                 Q_target[t, reading_agents.squeeze(0)] = next_best_action_value[reading_agents]
@@ -264,7 +254,7 @@ class RLST(BaseFairseqModel):
                 Q_target[t, naughty_agents.squeeze(0)] -= self.M
 
                 if terminated_agents.all() or t >= src_seq_len + trg_seq_len - 2:
-                    return word_outputs, Q_used, Q_target, actions_count.unsqueeze_(dim=1)
+                    return token_probs, Q_used, Q_target.detach_(), actions_count.unsqueeze_(dim=1)
             t += 1
 
     def _testing_episode(self, src):
@@ -274,7 +264,7 @@ class RLST(BaseFairseqModel):
         word_output = torch.full((1, batch_size), int(self.TRG_NULL), device=device)
         rnn_state = torch.zeros((self.net.rnn_num_layers, batch_size, self.net.rnn_hid_dim), device=device)
 
-        word_outputs = torch.zeros((self.testing_episode_max_time, batch_size, self.trg_vocab_len), device=device)
+        token_probs = torch.zeros((self.testing_episode_max_time, batch_size, self.trg_vocab_len), device=device)
 
         writing_agents = torch.full((1, batch_size), False, device=device, requires_grad=False)
         naughty_agents = torch.full((1, batch_size,), False, device=device, requires_grad=False)  # Want more input after input eos
@@ -295,25 +285,22 @@ class RLST(BaseFairseqModel):
 
             reading_agents = (action == 0)
             writing_agents = (action == 1)
-            bothing_agents = (action == 2)
 
             actions_count[0] += (~after_eos_agents * reading_agents).sum()
             actions_count[1] += (~after_eos_agents * writing_agents).sum()
-            actions_count[2] += (~after_eos_agents * bothing_agents).sum()
 
-            agents_outputting = writing_agents + bothing_agents
-            word_outputs[j[agents_outputting], agents_outputting.squeeze(0), :] = output[0, agents_outputting.squeeze(0), :-2]
+            token_probs[j[writing_agents], writing_agents.squeeze(0), :] = output[0, writing_agents.squeeze(0), :-2]
 
             after_eos_agents += (word_output == self.TRG_EOS)
-            naughty_agents = (reading_agents + bothing_agents) * (torch.gather(src, 0, i) == self.SRC_EOS).squeeze_(0)
-            i = i + ~naughty_agents * (reading_agents + bothing_agents)
-            j = j + agents_outputting
+            naughty_agents = reading_agents * (torch.gather(src, 0, i) == self.SRC_EOS).squeeze_(0)
+            i = i + ~naughty_agents * reading_agents
+            j = j + writing_agents
 
             i[i >= src_seq_len] = src_seq_len - 1
             word_output[reading_agents] = self.TRG_NULL
 
             if t >= self.testing_episode_max_time - 1:
-                return word_outputs, None, None, actions_count.unsqueeze_(dim=1)
+                return token_probs, None, None, actions_count.unsqueeze_(dim=1)
             t += 1
 
 
