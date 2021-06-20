@@ -23,7 +23,7 @@ class RLSTCriterionConfig(FairseqDataclass):
         metadata={"help": "N"},
     )
     epsilon: float = field(
-        default=0.15,
+        default=0.2,
         metadata={"help": "epsilon"},
     )
     teacher_forcing: float = field(
@@ -35,7 +35,7 @@ class RLSTCriterionConfig(FairseqDataclass):
         metadata={"help": "rho"},
     )
     eta_min: float = field(
-        default=1/30,
+        default=0.02,
         metadata={"help": "minimum value of policy multiplier"},
     )
     eta_max: float = field(
@@ -65,29 +65,15 @@ class RLSTCriterion(FairseqCriterion):
         self.teacher_forcing = teacher_forcing
         self.eta_min = eta_min
         self.eta_max = eta_max
-        self.optimizer = None
 
     def forward(self, model, sample, reduce=True):
-        """
-        Ok, so we are bringing our own Adam
-        """
-        if not self.optimizer:
-            self.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
         src_tokens = sample["net_input"]["src_tokens"]
         trg_tokens = sample["target"]
         src_tokens = src_tokens.T.contiguous()
         trg_tokens = trg_tokens.T.contiguous()
         word_outputs, Q_used, Q_target, actions = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing)
 
-        if self.training:
-            self.optimizer.zero_grad()
-            loss, mistranslation_loss, policy_loss, _ = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-        else:
-            loss, mistranslation_loss, policy_loss, _ = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
+        loss, mistranslation_loss, policy_loss, _ = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
 
         sample_size = (sample["target"].size(0) if self.sentence_avg else sample["ntokens"])
         logging_output = {
@@ -100,11 +86,8 @@ class RLSTCriterion(FairseqCriterion):
             "policy_multiplier": self.policy_multiplier,
             "epsilon": self.epsilon
         }
-        # Fooling fairseq optimizer with fake graph
-        input = torch.randn(3, 5, requires_grad=True)
-        target = torch.randn(3, 5)
-        output = self.policy_criterion(input, target)
-        return output, sample_size, logging_output
+
+        return loss * sample_size, sample_size, logging_output
 
     def compute_loss(self, word_outputs, trg, Q_used, Q_target):
         if not self.training:
@@ -141,13 +124,12 @@ class RLSTCriterion(FairseqCriterion):
         actions_ratio = RLSTCriterion.actions_ratio(total_actions.squeeze(1).tolist())
 
         metrics.log_scalar("loss", mistranslation_loss, sample_size, round=3, priority=0)
-        metrics.log_derived("ppl", lambda meters: utils.get_perplexity(meters["loss"].avg, round=2, base=math.e), priority=1)
+        metrics.log_derived("ppl", lambda meters: utils.get_perplexity(meters["loss"].avg, round=2, base=2), priority=1)
         metrics.log_scalar("policy_loss", policy_loss, sample_size, round=2, priority=2)
         metrics.log_scalar("eta", policy_multiplier, round=2, priority=3)
         metrics.log_scalar("eps", epsilon, round=2, priority=4)
         metrics.log_scalar("reads", actions_ratio[0], round=2, priority=5)
         metrics.log_scalar("writes", actions_ratio[1], round=2, priority=6)
-        metrics.log_scalar("boths", actions_ratio[2], round=2, priority=7)
         metrics.log_scalar("sample_size", sample_size, round=3, priority=99)
 
     @staticmethod
