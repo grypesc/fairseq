@@ -43,8 +43,7 @@ class LeakyNet(nn.Module):
 
 
 class LeakyResidualApproximator(nn.Module):
-    """Residual approximator for RLST. 'Simply the best.' - Tina Turner
-    Currently does not support pretrained embeddings."""
+    """Residual approximator for RLST. 'Simply the best.' - Tina Turner"""
     def __init__(self,
                  src_vocab_len,
                  trg_vocab_len,
@@ -250,7 +249,7 @@ class RLST(BaseFairseqModel):
                     word_output = torch.gather(trg, 1, old_j)
                 word_output[reading_agents] = self.TRG_NULL
 
-                reward = (-1) * self.mistranslation_loss(output[:, 0, :-2], torch.gather(trg, 1, old_j)[:, 0], reduce=False)
+                reward = (-1) * self.mistranslation_loss(output[:, 0, :-2], torch.gather(trg, 1, old_j)[:, 0], reduce=False)[0]
 
             token_probs[writing_agents.squeeze(1), old_j[writing_agents], :] = output[writing_agents.squeeze(1), 0, :-2]
 
