@@ -128,9 +128,9 @@ class RLSTCriterion(FairseqCriterion):
 
     def compute_loss(self, word_outputs, trg, Q_used, Q_target):
         if not self.training:
-            word_outputs = word_outputs[:trg.size()[0], :, :]
+            word_outputs = word_outputs[:, :trg.size()[1], :]
 
-        word_outputs = word_outputs.view(-1, word_outputs.shape[-1])
+        word_outputs = word_outputs.reshape(-1, word_outputs.shape[-1])
         trg = trg.view(-1)
 
         mistranslation_loss = self.mistranslation_criterion(word_outputs, trg, reduce=True)
