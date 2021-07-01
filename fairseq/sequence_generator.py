@@ -207,8 +207,8 @@ class SequenceGenerator(nn.Module):
 
         bsz = src_tokens.size()[0]
 
-        out = self.model.forward(net_input["src_tokens"].T.contiguous())[0]
-        out_tokens = out.argmax(dim=2).t()
+        out = self.model.forward(net_input["src_tokens"])[0]
+        out_tokens = out.argmax(dim=2)
         finalized = torch.jit.annotate(
             List[List[Dict[str, Tensor]]],
             [torch.jit.annotate(List[Dict[str, Tensor]], []) for i in range(bsz)],

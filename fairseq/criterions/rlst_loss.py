@@ -16,14 +16,53 @@ from omegaconf import II
 torch.set_printoptions(threshold=10_000)
 
 
+class LabelSmoothedCrossEntropy(torch.nn.Module):
+    def __init__(self, label_smoothing=0.0, ignore_index=None):
+        super(LabelSmoothedCrossEntropy, self).__init__()
+        self.label_smoothing = label_smoothing
+        self.ignore_index = ignore_index
+
+    def label_smoothed_nll_loss(self, lprobs, target, label_smoothing, reduce=True):
+        """Taken from fairseq and added pad_indices_count as we have to calculate mean loss and therefore ignore pad indices"""
+        if target.dim() == lprobs.dim() - 1:
+            target = target.unsqueeze(-1)
+        nll_loss = -lprobs.gather(dim=-1, index=target)
+        smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
+        pad_count = 0
+        if self.ignore_index is not None:
+            pad_mask = target.eq(self.ignore_index)
+            pad_count = pad_mask.sum()
+            nll_loss.masked_fill_(pad_mask, 0.0)
+            smooth_loss.masked_fill_(pad_mask, 0.0)
+
+        nll_loss = nll_loss.squeeze(-1)
+        smooth_loss = smooth_loss.squeeze(-1)
+        if reduce:
+            non_pad_count = lprobs.size()[0] - pad_count
+            nll_loss = nll_loss.sum() / non_pad_count
+            smooth_loss = smooth_loss.sum() / non_pad_count
+        lab_sm_i = label_smoothing / (lprobs.size(-1) - 1)
+        loss = (1.0 - label_smoothing - lab_sm_i) * nll_loss + lab_sm_i * smooth_loss
+        return loss, nll_loss
+
+    def forward(self, net_output, target, reduce):
+        lprobs = torch.nn.functional.log_softmax(net_output, dim=-1)
+        loss, nll_loss = self.label_smoothed_nll_loss(lprobs, target, self.label_smoothing, reduce=reduce)
+        return loss
+
+
 @dataclass
 class RLSTCriterionConfig(FairseqDataclass):
     N: int = field(
         default=100_000,
         metadata={"help": "N"},
     )
+    smoothing: float = field(
+        default=0.0,
+        metadata={"help": "label smoothing for cross entropy misstranslation loss"},
+    )
     epsilon: float = field(
-        default=0.2,
+        default=0.4,
         metadata={"help": "epsilon"},
     )
     teacher_forcing: float = field(
@@ -49,16 +88,16 @@ class RLSTCriterionConfig(FairseqDataclass):
     "rlst_criterion", dataclass=RLSTCriterionConfig
 )
 class RLSTCriterion(FairseqCriterion):
-    def __init__(self, task, sentence_avg, N, epsilon, teacher_forcing, rho, eta_min, eta_max):
+    def __init__(self, task, sentence_avg, N, smoothing, epsilon, teacher_forcing, rho, eta_min, eta_max):
         super().__init__(task)
         self.sentence_avg = sentence_avg
         self.RHO = rho
         self.rho_to_n = 1  # n is minibatch index
         self.mistranslation_loss_weight = 0
         self.policy_loss_weight = 0
-        self.mistranslation_criterion = nn.CrossEntropyLoss(ignore_index=self.padding_idx)
+        self.mistranslation_criterion = LabelSmoothedCrossEntropy(ignore_index=self.padding_idx, label_smoothing=smoothing)
         self.policy_criterion = nn.MSELoss(reduction="sum")
-        self.policy_multiplier = None
+        self.eta = None
         self.n = -1
         self.N = N
         self.epsilon = epsilon
@@ -69,10 +108,7 @@ class RLSTCriterion(FairseqCriterion):
     def forward(self, model, sample, reduce=True):
         src_tokens = sample["net_input"]["src_tokens"]
         trg_tokens = sample["target"]
-        src_tokens = src_tokens.T.contiguous()
-        trg_tokens = trg_tokens.T.contiguous()
-        word_outputs, Q_used, Q_target, actions = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing)
-
+        word_outputs, Q_used, Q_target, is_read, is_write = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing)
         loss, mistranslation_loss, policy_loss, _ = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
 
         sample_size = (sample["target"].size(0) if self.sentence_avg else sample["ntokens"])
@@ -80,11 +116,12 @@ class RLSTCriterion(FairseqCriterion):
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
-            "actions": actions.data,
             "mistranslation_loss": mistranslation_loss.data,
             "policy_loss": policy_loss.data if self.training else -1.0,
-            "policy_multiplier": self.policy_multiplier,
-            "epsilon": self.epsilon
+            "eta": self.eta,
+            "epsilon": self.epsilon,
+            "total_reads": int(is_read.sum()),
+            "total_writes": int(is_write.sum())
         }
 
         return loss * sample_size, sample_size, logging_output
@@ -96,19 +133,19 @@ class RLSTCriterion(FairseqCriterion):
         word_outputs = word_outputs.view(-1, word_outputs.shape[-1])
         trg = trg.view(-1)
 
-        mistranslation_loss = self.mistranslation_criterion(word_outputs, trg)
+        mistranslation_loss = self.mistranslation_criterion(word_outputs, trg, reduce=True)
         if self.training:
             self.n += 1
-            self.policy_multiplier = self.eta_max - (self.eta_max - self.eta_min) * math.e ** ((-3) * self.n / self.N)
+            self.eta = self.eta_max - (self.eta_max - self.eta_min) * math.e ** ((-3) * self.n / self.N)
             policy_loss = self.policy_criterion(Q_used, Q_target)/torch.count_nonzero(Q_target)
             self.rho_to_n *= self.RHO
             w_k = (self.RHO - self.rho_to_n) / (1 - self.rho_to_n)
             self.mistranslation_loss_weight = w_k * self.mistranslation_loss_weight + (1 - w_k) * float(mistranslation_loss)
             self.policy_loss_weight = w_k * self.policy_loss_weight + (1 - w_k) * float(policy_loss)
-            loss = policy_loss * self.policy_multiplier / self.policy_loss_weight + mistranslation_loss / self.mistranslation_loss_weight
-            return loss, mistranslation_loss, policy_loss, self.policy_multiplier
+            loss = policy_loss * self.eta / self.policy_loss_weight + mistranslation_loss / self.mistranslation_loss_weight
+            return loss, mistranslation_loss, policy_loss, self.eta
         else:
-            return -1.0, mistranslation_loss, -1.0, self.policy_multiplier
+            return -1.0, mistranslation_loss, -1.0, self.eta
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:
@@ -117,26 +154,21 @@ class RLSTCriterion(FairseqCriterion):
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
         mistranslation_loss = sum(log.get("mistranslation_loss", 0) for log in logging_outputs)
         policy_loss = sum(log.get("policy_loss", 0) for log in logging_outputs)
-        policy_multiplier = sum(log.get("policy_multiplier", 0) for log in logging_outputs)
+        eta = sum(log.get("eta", 0) for log in logging_outputs)
         epsilon = sum(log.get("epsilon", 0) for log in logging_outputs)/len(logging_outputs)
 
-        total_actions = sum(log.get("actions", 0) for log in logging_outputs)
-        actions_ratio = RLSTCriterion.actions_ratio(total_actions.squeeze(1).tolist())
+        total_reads = sum(log.get("total_reads", 0) for log in logging_outputs)
+        total_writes = sum(log.get("total_writes", 0) for log in logging_outputs)
+        read_relative_frequency = total_reads / (total_reads + total_writes)
 
         metrics.log_scalar("loss", mistranslation_loss, sample_size, round=3, priority=0)
         metrics.log_derived("ppl", lambda meters: utils.get_perplexity(meters["loss"].avg, round=2, base=2), priority=1)
         metrics.log_scalar("policy_loss", policy_loss, sample_size, round=2, priority=2)
-        metrics.log_scalar("eta", policy_multiplier, round=2, priority=3)
+        metrics.log_scalar("eta", eta, round=2, priority=3)
         metrics.log_scalar("eps", epsilon, round=2, priority=4)
-        metrics.log_scalar("reads", actions_ratio[0], round=2, priority=5)
-        metrics.log_scalar("writes", actions_ratio[1], round=2, priority=6)
+        metrics.log_scalar("read_rf", read_relative_frequency, round=2, priority=5)
         metrics.log_scalar("sample_size", sample_size, round=3, priority=99)
 
-    @staticmethod
-    def actions_ratio(actions):
-        s = sum(actions)
-        a = [actions[0] / s, actions[1] / s, actions[2] / s]
-        return [round(action, 2) for action in a]
 
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:
