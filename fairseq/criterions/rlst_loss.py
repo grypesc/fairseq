@@ -55,7 +55,7 @@ class LabelSmoothedCrossEntropy(torch.nn.Module):
 class RLSTCriterionConfig(FairseqDataclass):
     N: int = field(
         default=100_000,
-        metadata={"help": "N"},
+        metadata={"help": "N"}
     )
     smoothing: float = field(
         default=0.0,
@@ -63,23 +63,23 @@ class RLSTCriterionConfig(FairseqDataclass):
     )
     epsilon: float = field(
         default=0.4,
-        metadata={"help": "epsilon"},
+        metadata={"help": "epsilon"}
     )
     teacher_forcing: float = field(
         default=1.0,
-        metadata={"help": "teacher force"},
+        metadata={"help": "teacher force"}
     )
     rho: float = field(
         default=0.99,
-        metadata={"help": "rho"},
+        metadata={"help": "rho"}
     )
     eta_min: float = field(
         default=0.02,
-        metadata={"help": "minimum value of policy multiplier"},
+        metadata={"help": "minimum value of policy multiplier"}
     )
     eta_max: float = field(
         default=0.2,
-        metadata={"help": "maximum value of policy multiplier"},
+        metadata={"help": "maximum value of policy multiplier"}
     )
     sentence_avg: bool = II("optimization.sentence_avg")
 
@@ -98,11 +98,11 @@ class RLSTCriterion(FairseqCriterion):
         self.policy_loss_weight = 0
         self.mistranslation_criterion = LabelSmoothedCrossEntropy(ignore_index=self.padding_idx, label_smoothing=smoothing)
         self.policy_criterion = nn.MSELoss(reduction="sum")
-        self.eta = None
         self.n = -1
         self.N = N
         self.epsilon = epsilon
         self.teacher_forcing = teacher_forcing
+        self.eta = None
         self.eta_min = eta_min
         self.eta_max = eta_max
 
@@ -110,15 +110,16 @@ class RLSTCriterion(FairseqCriterion):
         src_tokens = sample["net_input"]["src_tokens"]
         trg_tokens = sample["target"]
         word_outputs, Q_used, Q_target, is_read, is_write = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing)
-        weighted_loss, mistranslation_loss, nll_loss, policy_loss, _ = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
+        weighted_loss, mistranslation_loss, nll_loss, policy_loss = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
+        total_time_steps = int((is_write + is_read).sum())
         ntokens = sample["ntokens"]
         logging_output = {
             "ntokens": ntokens,
             "nsentences": sample["target"].size(0),
-            "weighted_loss": weighted_loss.data if self.training else -1.0,
-            "mistranslation_loss": mistranslation_loss.data,
-            "nll_loss": nll_loss.data,
-            "policy_loss": policy_loss.data if self.training else -1.0,
+            "mistranslation_loss": ntokens * mistranslation_loss.data,
+            "nll_loss": ntokens * nll_loss.data,
+            "policy_loss": total_time_steps * policy_loss.data if self.training else -1.0,
+            "total_time_steps": total_time_steps,
             "eta": self.eta,
             "total_reads": int(is_read.sum()),
             "total_writes": int(is_write.sum())
@@ -142,32 +143,34 @@ class RLSTCriterion(FairseqCriterion):
             w_k = (self.RHO - self.rho_to_n) / (1 - self.rho_to_n)
             self.mistranslation_loss_weight = w_k * self.mistranslation_loss_weight + (1 - w_k) * float(mistranslation_loss)
             self.policy_loss_weight = w_k * self.policy_loss_weight + (1 - w_k) * float(policy_loss)
-            weighted_loss = policy_loss * self.eta / self.policy_loss_weight + mistranslation_loss / self.mistranslation_loss_weight
-            return weighted_loss, mistranslation_loss, nll_loss, policy_loss, self.eta
+            weighted_loss = self.eta * policy_loss / self.policy_loss_weight + mistranslation_loss / self.mistranslation_loss_weight
+            return weighted_loss, mistranslation_loss, nll_loss, policy_loss
         else:
-            return -1.0, mistranslation_loss, nll_loss, -1.0, self.eta
+            return -1.0, mistranslation_loss, nll_loss, -1.0
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:
         """Aggregate logging outputs from data parallel training."""
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
-        weighted_loss = sum(log.get("weighted_loss", 0) for log in logging_outputs) / len(logging_outputs)
-        mistranslation_loss = sum(log.get("mistranslation_loss", 0) for log in logging_outputs) / len(logging_outputs)
-        nll_loss = sum(log.get("nll_loss", 0) for log in logging_outputs) / len(logging_outputs)
-        policy_loss = sum(log.get("policy_loss", 0) for log in logging_outputs) / len(logging_outputs)
-        eta = sum(log.get("eta", 0) for log in logging_outputs) / len(logging_outputs)
+        mistranslation_loss = sum(log.get("mistranslation_loss", 0) for log in logging_outputs)
+        nll_loss = sum(log.get("nll_loss", 0) for log in logging_outputs)
+        policy_loss = sum(log.get("policy_loss", 0) for log in logging_outputs)
+        eta = sum(log.get("eta", 0) for log in logging_outputs)
+        total_time_steps = sum(log.get("total_time_steps", 0) for log in logging_outputs)
 
         total_reads = sum(log.get("total_reads", 0) for log in logging_outputs)
         total_writes = sum(log.get("total_writes", 0) for log in logging_outputs)
-        read_relative_frequency = total_reads / (total_reads + total_writes)
+        read_relative_frequency = total_reads / total_time_steps
+        write_relative_frequency = total_writes / total_time_steps
 
-        metrics.log_scalar("loss", mistranslation_loss, ntokens, round=3, priority=1)
-        metrics.log_scalar("nll_loss", nll_loss, ntokens, round=3, priority=2)
+        metrics.log_scalar("loss", mistranslation_loss / ntokens / math.log(2), ntokens, round=2, priority=1)
+        metrics.log_scalar("nll_loss", nll_loss / ntokens / math.log(2), ntokens, round=2, priority=2)
         metrics.log_derived("ppl", lambda meters: utils.get_perplexity(meters["nll_loss"].avg, round=2, base=2), priority=3)
-        metrics.log_scalar("policy_loss", policy_loss, ntokens, round=2, priority=4)
-        metrics.log_scalar("weighted_loss", weighted_loss, ntokens, round=3, priority=5)
+        metrics.log_scalar("policy_loss", policy_loss / total_time_steps, total_time_steps, round=2, priority=4)
+
         metrics.log_scalar("eta", eta, 0, round=2, priority=9)
         metrics.log_scalar("read_rf", read_relative_frequency, ntokens, round=2, priority=10)
+        metrics.log_scalar("write_rf", write_relative_frequency, ntokens, round=2, priority=11)
         metrics.log_scalar("ntokens", ntokens, round=2, priority=99)
 
     @staticmethod
