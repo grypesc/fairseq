@@ -121,6 +121,7 @@ class RLSTCriterion(FairseqCriterion):
             "policy_loss": total_time_steps * policy_loss.data if self.training else -1.0,
             "total_time_steps": total_time_steps,
             "eta": self.eta,
+            "workers_num": 1,
             "total_reads": int(is_read.sum()),
             "total_writes": int(is_write.sum())
         }
@@ -156,6 +157,7 @@ class RLSTCriterion(FairseqCriterion):
         nll_loss = sum(log.get("nll_loss", 0) for log in logging_outputs)
         policy_loss = sum(log.get("policy_loss", 0) for log in logging_outputs)
         eta = sum(log.get("eta", 0) for log in logging_outputs)
+        workers = sum(log.get("workers_num", 0) for log in logging_outputs)
         total_time_steps = sum(log.get("total_time_steps", 0) for log in logging_outputs)
 
         total_reads = sum(log.get("total_reads", 0) for log in logging_outputs)
@@ -168,10 +170,10 @@ class RLSTCriterion(FairseqCriterion):
         metrics.log_derived("ppl", lambda meters: utils.get_perplexity(meters["nll_loss"].avg, round=2, base=2), priority=3)
         metrics.log_scalar("policy_loss", policy_loss / total_time_steps, total_time_steps, round=2, priority=4)
 
-        metrics.log_scalar("eta", eta, 0, round=2, priority=9)
+        metrics.log_scalar("eta", eta / workers, 0, round=2, priority=9)
         metrics.log_scalar("read_rf", read_relative_frequency, ntokens, round=2, priority=10)
         metrics.log_scalar("write_rf", write_relative_frequency, ntokens, round=2, priority=11)
-        metrics.log_scalar("ntokens", ntokens, round=2, priority=99)
+        metrics.log_scalar("ntokens", ntokens, round=2, priority=12)
 
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:
