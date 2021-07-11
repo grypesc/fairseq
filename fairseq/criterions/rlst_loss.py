@@ -129,25 +129,24 @@ class RLSTCriterion(FairseqCriterion):
         return weighted_loss * ntokens, ntokens, logging_output
 
     def compute_loss(self, word_outputs, trg, Q_used, Q_target):
-        if not self.training:
-            word_outputs = word_outputs[:, :trg.size()[1], :]
+        # if not self.training:
+        #     word_outputs = word_outputs[:, :trg.size()[1], :]
 
         word_outputs = word_outputs.reshape(-1, word_outputs.shape[-1])
         trg = trg.view(-1)
 
         mistranslation_loss, nll_loss = self.mistranslation_criterion(word_outputs, trg, reduce=True)
-        if self.training:
-            self.n += 1
-            self.eta = self.eta_max - (self.eta_max - self.eta_min) * math.e ** ((-3) * self.n / self.N)
-            policy_loss = self.policy_criterion(Q_used, Q_target)/torch.count_nonzero(Q_target)
-            self.rho_to_n *= self.RHO
-            w_k = (self.RHO - self.rho_to_n) / (1 - self.rho_to_n)
-            self.mistranslation_loss_weight = w_k * self.mistranslation_loss_weight + (1 - w_k) * float(mistranslation_loss)
-            self.policy_loss_weight = w_k * self.policy_loss_weight + (1 - w_k) * float(policy_loss)
-            weighted_loss = self.eta * policy_loss / self.policy_loss_weight + mistranslation_loss / self.mistranslation_loss_weight
-            return weighted_loss, mistranslation_loss, nll_loss, policy_loss
-        else:
-            return -1.0, mistranslation_loss, nll_loss, -1.0
+
+        self.n += 1
+        self.eta = self.eta_max - (self.eta_max - self.eta_min) * math.e ** ((-3) * self.n / self.N)
+        policy_loss = self.policy_criterion(Q_used, Q_target)/torch.count_nonzero(Q_target)
+        self.rho_to_n *= self.RHO
+        w_k = (self.RHO - self.rho_to_n) / (1 - self.rho_to_n)
+        self.mistranslation_loss_weight = w_k * self.mistranslation_loss_weight + (1 - w_k) * float(mistranslation_loss)
+        self.policy_loss_weight = w_k * self.policy_loss_weight + (1 - w_k) * float(policy_loss)
+        weighted_loss = self.eta * policy_loss / self.policy_loss_weight + mistranslation_loss / self.mistranslation_loss_weight
+        return weighted_loss, mistranslation_loss, nll_loss, policy_loss
+
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:
