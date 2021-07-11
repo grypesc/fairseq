@@ -377,18 +377,18 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
         batch_size = src.size()[0]
         src_seq_len = src.size()[1]
         device = src.device
-        if not incremental_state:
-            utils.set_incremental_state(self, incremental_state, 'i', torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device))
-            utils.set_incremental_state(self, incremental_state, 't', torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device))
-            utils.set_incremental_state(self, incremental_state, 'rnn_state', torch.zeros((self.approximator.rnn_num_layers, batch_size, self.approximator.rnn_hid_dim), device=device))
+        if utils.get_incremental_state(self, incremental_state, 'i') is None:
+            i = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
+            t = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
+            rnn_state = torch.zeros((self.approximator.rnn_num_layers, batch_size, self.approximator.rnn_hid_dim), device=device)
             input = src[:, :1]
             prev_output_tokens[:, :1] = self.TRG_NULL
         else:
             input = torch.full((batch_size, 1), self.SRC_NULL, device=device)
+            i = utils.get_incremental_state(self, incremental_state, 'i')
+            t = utils.get_incremental_state(self, incremental_state, 't')
+            rnn_state = utils.get_incremental_state(self, incremental_state, 'rnn_state')
 
-        i = utils.get_incremental_state(self, incremental_state, 'i')
-        t = utils.get_incremental_state(self, incremental_state, 't')
-        rnn_state = utils.get_incremental_state(self, incremental_state, 'rnn_state')
         frozen_agents = torch.full((batch_size, 1), False, device=device)
         token_probs = torch.zeros((batch_size, 1, self.trg_vocab_len), device=device)
 
@@ -396,7 +396,7 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
             output, new_rnn_state = self.approximator(input, prev_output_tokens[:, -1:], rnn_state)
             rnn_state[:, ~frozen_agents.squeeze(1)] = new_rnn_state[:, ~frozen_agents.squeeze(1)]
 
-            failed_agents = t > 3 * src_seq_len
+            failed_agents = t > 2 * src_seq_len + 5
 
             action = torch.max(output[:, :, -2:], 2)[1]
             reading_agents = (action == 0) * (~frozen_agents) * (~failed_agents)
