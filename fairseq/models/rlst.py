@@ -396,7 +396,7 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
             output, new_rnn_state = self.approximator(input, prev_output_tokens[:, -1:], rnn_state)
             rnn_state[:, ~frozen_agents.squeeze(1)] = new_rnn_state[:, ~frozen_agents.squeeze(1)]
 
-            failed_agents = t > self.TESTING_EPISODE_MAX_TIME
+            failed_agents = t > 3 * src_seq_len
 
             action = torch.max(output[:, :, -2:], 2)[1]
             reading_agents = (action == 0) * (~frozen_agents) * (~failed_agents)
@@ -410,7 +410,7 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
 
             i[i >= src_seq_len] = src_seq_len - 1
             input = torch.gather(src, 1, i)
-            t[~frozen_agents] += 1
+            t[reading_agents + writing_agents] += 1
 
             if torch.all(frozen_agents):
                 utils.set_incremental_state(self, incremental_state, 'i', i)
