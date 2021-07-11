@@ -389,7 +389,7 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
             i = cached_state["i"]
             t = cached_state["t"]
             rnn_state = cached_state["rnn_state"]
-            word_output = prev_output_tokens[:, -1:]
+            word_output = torch.tensor(prev_output_tokens[:, -1:], device=device)
 
         frozen_agents = torch.full((batch_size, 1), False, device=device)
         token_probs = torch.zeros((batch_size, 1, self.trg_vocab_len), device=device)
@@ -409,8 +409,8 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
 
             naughty_agents = reading_agents * (torch.gather(src, 1, i) == self.SRC_EOS)
             i = i + ~naughty_agents * reading_agents
-
             i[i >= src_seq_len] = src_seq_len - 1
+
             input = torch.gather(src, 1, i)
             word_output[reading_agents] = self.TRG_NULL
             t[reading_agents + writing_agents] += 1
