@@ -377,7 +377,8 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
         batch_size = src.size()[0]
         src_seq_len = src.size()[1]
         device = src.device
-        if utils.get_incremental_state(self, incremental_state, 'i') is None:
+        cached_state = utils.get_incremental_state(self, incremental_state, 'cached_state')
+        if cached_state is None:
             i = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
             t = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
             rnn_state = torch.zeros((self.approximator.rnn_num_layers, batch_size, self.approximator.rnn_hid_dim), device=device)
@@ -385,9 +386,9 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
             prev_output_tokens[:, :1] = self.TRG_NULL
         else:
             input = torch.full((batch_size, 1), self.SRC_NULL, device=device)
-            i = utils.get_incremental_state(self, incremental_state, 'i')
-            t = utils.get_incremental_state(self, incremental_state, 't')
-            rnn_state = utils.get_incremental_state(self, incremental_state, 'rnn_state')
+            i = cached_state["i"]
+            t = cached_state["t"]
+            rnn_state = cached_state["rnn_state"]
 
         frozen_agents = torch.full((batch_size, 1), False, device=device)
         token_probs = torch.zeros((batch_size, 1, self.trg_vocab_len), device=device)
@@ -413,19 +414,27 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
             t[reading_agents + writing_agents] += 1
 
             if torch.all(frozen_agents):
-                utils.set_incremental_state(self, incremental_state, 'i', i)
-                utils.set_incremental_state(self, incremental_state, 't', t)
-                utils.set_incremental_state(self, incremental_state, 'rnn_state', rnn_state)
+                cached_state_new = {
+                    "i": i,
+                    "t": t,
+                    "rnn_state": rnn_state
+                }
+                utils.set_incremental_state(self, incremental_state, 'cached_state', cached_state_new)
                 return token_probs, None
 
     def reorder_incremental_state(self, incremental_state, new_order):
-        i = utils.get_incremental_state(self, incremental_state, 'i').index_select(0, new_order)
-        t = utils.get_incremental_state(self, incremental_state, 't').index_select(0, new_order)
-        rnn_state = utils.get_incremental_state(self, incremental_state, 'rnn_state').index_select(1, new_order)
+        cached_state = utils.get_incremental_state(self, incremental_state, 'cached_state')
+        i = cached_state["i"].index_select(0, new_order)
+        t = cached_state["t"].index_select(0, new_order)
+        rnn_state = cached_state["rnn_state"].index_select(1, new_order)
 
-        utils.set_incremental_state(self, incremental_state, 'i', i)
-        utils.set_incremental_state(self, incremental_state, 't', t)
-        utils.set_incremental_state(self, incremental_state, 'rnn_state', rnn_state)
+        cached_state_new = {
+                "i": i,
+                "t": t,
+                "rnn_state": rnn_state
+            }
+
+        utils.set_incremental_state(self, incremental_state, 'cached_state', cached_state_new)
 
 
 @register_model_architecture('rlst', 'rlst')
