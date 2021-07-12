@@ -118,7 +118,7 @@ class RLSTCriterion(FairseqCriterion):
             "nsentences": sample["target"].size(0),
             "mistranslation_loss": ntokens * mistranslation_loss.data,
             "nll_loss": ntokens * nll_loss.data,
-            "policy_loss": total_time_steps * policy_loss.data if self.training else -1.0,
+            "policy_loss": total_time_steps * policy_loss.data,
             "total_time_steps": total_time_steps,
             "eta": self.eta,
             "workers_num": 1,
