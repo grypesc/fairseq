@@ -113,6 +113,8 @@ class RLSTCriterion(FairseqCriterion):
         weighted_loss, mistranslation_loss, nll_loss, policy_loss = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
         total_time_steps = int((is_write + is_read).sum())
         ntokens = sample["ntokens"]
+        write_lead, write_lead_relative = self.compute_write_lead_metrics(is_read, is_write)
+
         logging_output = {
             "ntokens": ntokens,
             "nsentences": sample["target"].size(0),
@@ -123,7 +125,9 @@ class RLSTCriterion(FairseqCriterion):
             "eta": self.eta,
             "workers_num": 1,
             "total_reads": int(is_read.sum()),
-            "total_writes": int(is_write.sum())
+            "total_writes": int(is_write.sum()),
+            "write_lead": float(write_lead.sum()),
+            "write_lead_relative": float(write_lead_relative.sum())
         }
 
         return weighted_loss * ntokens, ntokens, logging_output
@@ -147,11 +151,26 @@ class RLSTCriterion(FairseqCriterion):
         weighted_loss = self.eta * policy_loss / self.policy_loss_weight + mistranslation_loss / self.mistranslation_loss_weight
         return weighted_loss, mistranslation_loss, nll_loss, policy_loss
 
+    @staticmethod
+    def compute_write_lead_metrics(is_read, is_write):
+        """This metric measures how much write action is ahead of read action in time."""
+        with torch.no_grad():
+            action_weights = torch.cumsum(is_read + is_write, dim=1)
+            episode_length = action_weights[:, -1]
+            read_weights = action_weights - 1
+            read_weights[~is_read] = 0
+            write_weights = action_weights - 1
+            write_weights[~is_write] = 0
+            mean_read = torch.sum(read_weights, dim=1) / (is_read.sum(dim=1) + 1e-8)
+            mean_write = torch.sum(write_weights, dim=1) / (is_write.sum(dim=1) + 1e-8)
+            write_lead = mean_write - mean_read
+            return mean_write - mean_read, write_lead / episode_length
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:
         """Aggregate logging outputs from data parallel training."""
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
+        nsentences = sum(log.get("nsentences", 0) for log in logging_outputs)
         mistranslation_loss = sum(log.get("mistranslation_loss", 0) for log in logging_outputs)
         nll_loss = sum(log.get("nll_loss", 0) for log in logging_outputs)
         policy_loss = sum(log.get("policy_loss", 0) for log in logging_outputs)
@@ -160,9 +179,9 @@ class RLSTCriterion(FairseqCriterion):
         total_time_steps = sum(log.get("total_time_steps", 0) for log in logging_outputs)
 
         total_reads = sum(log.get("total_reads", 0) for log in logging_outputs)
-        total_writes = sum(log.get("total_writes", 0) for log in logging_outputs)
         read_relative_frequency = total_reads / total_time_steps
-        write_relative_frequency = total_writes / total_time_steps
+        write_lead = sum(log.get("write_lead", 0) for log in logging_outputs)
+        write_lead_relative = sum(log.get("write_lead_relative", 0) for log in logging_outputs)
 
         metrics.log_scalar("loss", mistranslation_loss / ntokens / math.log(2), ntokens, round=2, priority=1)
         metrics.log_scalar("nll_loss", nll_loss / ntokens / math.log(2), ntokens, round=2, priority=2)
@@ -171,7 +190,8 @@ class RLSTCriterion(FairseqCriterion):
 
         metrics.log_scalar("eta", eta / workers, 0, round=2, priority=9)
         metrics.log_scalar("read_rf", read_relative_frequency, ntokens, round=2, priority=10)
-        metrics.log_scalar("write_rf", write_relative_frequency, ntokens, round=2, priority=11)
+        metrics.log_scalar("write_lead", write_lead / nsentences, nsentences, round=2, priority=11)
+        metrics.log_scalar("write_lead_r", write_lead_relative / nsentences, nsentences, round=2, priority=12)
         metrics.log_scalar("ntokens", ntokens, round=2, priority=12)
 
     @staticmethod
