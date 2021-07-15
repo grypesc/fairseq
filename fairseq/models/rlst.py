@@ -84,6 +84,70 @@ class LeakyResidualApproximator(nn.Module):
         outputs = self.output(leaky_output)
         return outputs, rnn_new_states
 
+    def init_state(self, batch_size, device):
+        return torch.zeros((self.rnn_num_layers, batch_size, self.rnn_hid_dim), device=device)
+
+    def update_state(self, state, new_state, agents_ignored):
+        state[:, ~agents_ignored, :] = new_state[:, ~agents_ignored, :]
+        return state
+
+    def reorder_state(self, state, new_order):
+        return state.index_select(1, new_order)
+
+
+class LeakyLSTM(nn.Module):
+    def __init__(self,
+                 src_vocab_len,
+                 trg_vocab_len,
+                 rnn_hid_dim,
+                 rnn_dropout,
+                 rnn_num_layers,
+                 src_embed_dim=256,
+                 trg_embed_dim=256,
+                 embedding_dropout=0.0,
+                 ):
+        super().__init__()
+
+        self.rnn_hid_dim = rnn_hid_dim
+        self.rnn_num_layers = rnn_num_layers
+
+        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
+        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
+        self.embedding_dropout = nn.Dropout(embedding_dropout)
+        self.rnn_dropout = nn.Dropout(rnn_dropout)
+        self.activation = nn.LeakyReLU()
+        self.linear_embedding = nn.Linear(src_embed_dim + trg_embed_dim, rnn_hid_dim)
+        self.rnn = nn.LSTM(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=rnn_num_layers, batch_first=True, dropout=0.0)
+        self.linear = nn.Linear(rnn_hid_dim, rnn_hid_dim)
+        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 2)
+
+    def forward(self, src, previous_output, rnn_state):
+        src_embedded = self.src_embedding(src)
+        trg_embedded = self.trg_embedding(previous_output)
+        leaky_input = self.embedding_dropout(torch.cat((src_embedded, trg_embedded), dim=2))
+        rnn_input = self.activation(self.embedding_dropout(self.linear_embedding(leaky_input)))
+        rnn_output, rnn_state = self.rnn(rnn_input, rnn_state)
+        leaky_out = self.rnn_dropout(self.activation(self.linear(rnn_output)))
+        outputs = self.output(leaky_out)
+        return outputs, rnn_state
+
+    def init_state(self, batch_size, device):
+        return (
+                torch.zeros((self.rnn_num_layers, batch_size, self.rnn_hid_dim), device=device),
+                torch.zeros((self.rnn_num_layers, batch_size, self.rnn_hid_dim), device=device)
+        )
+
+    def update_state(self, state, new_state, agents_ignored):
+        h_0, c_0 = state
+        h_0_new, c_0_new = new_state
+        h_0[:, ~agents_ignored, :] = h_0_new[:, ~agents_ignored, :]
+        c_0[:, ~agents_ignored, :] = c_0_new[:, ~agents_ignored, :]
+        return h_0, c_0
+
+    def reorder_state(self, state, new_order):
+        h_0, c_0 = state
+        return h_0.index_select(1, new_order), c_0.index_select(1, new_order)
+
 
 @register_model('rlst')
 class RLST(FairseqEncoderDecoderModel):
@@ -163,7 +227,7 @@ class RLST(FairseqEncoderDecoderModel):
         target_vocab = task.target_dictionary
         TESTING_EPISODE_MAX_TIME = args.max_testing_time
 
-        approximator = LeakyResidualApproximator(
+        approximator = LeakyLSTM(
             src_vocab_len=len(source_vocab.symbols),
             trg_vocab_len=len(target_vocab.symbols),
             src_embed_dim=args.src_embed_dim,
@@ -213,7 +277,7 @@ class RLST(FairseqEncoderDecoderModel):
         src_seq_len = src.size()[1]
         trg_seq_len = trg.size()[1]
         word_output = torch.full((batch_size, 1), self.TRG_NULL, device=device)
-        rnn_state = torch.zeros((self.approximator.rnn_num_layers, batch_size, self.approximator.rnn_hid_dim), device=device)
+        rnn_state = self.approximator.init_state(batch_size, device)
 
         token_probs = torch.zeros((batch_size, trg_seq_len, self.trg_vocab_len), device=device)
         Q_used = torch.zeros((batch_size, src_seq_len + trg_seq_len - 1), device=device)
@@ -321,7 +385,7 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
         if cached_state is None:
             i = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
             t = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
-            rnn_state = torch.zeros((self.approximator.rnn_num_layers, batch_size, self.approximator.rnn_hid_dim), device=device)
+            rnn_state = self.approximator.init_state(batch_size, device)
             input = src[:, :1]
             word_output = torch.full((batch_size, 1), self.TRG_NULL, device=device)
         else:
@@ -336,7 +400,7 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
 
         while True:
             output, new_rnn_state = self.approximator(input, word_output, rnn_state)
-            rnn_state[:, ~frozen_agents.squeeze(1), :] = new_rnn_state[:, ~frozen_agents.squeeze(1), :]
+            rnn_state = self.approximator.update_state(rnn_state, new_rnn_state, frozen_agents.squeeze(1))
 
             failed_agents = t > testing_episode_max_time
 
@@ -368,7 +432,7 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
         cached_state = utils.get_incremental_state(self, incremental_state, 'cached_state')
         i = cached_state["i"].index_select(0, new_order)
         t = cached_state["t"].index_select(0, new_order)
-        rnn_state = cached_state["rnn_state"].index_select(1, new_order)
+        rnn_state = self.approximator.reorder_state(cached_state["rnn_state"], new_order)
 
         cached_state_new = {
                 "i": i,
