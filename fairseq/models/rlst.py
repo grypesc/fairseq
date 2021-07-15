@@ -2,8 +2,10 @@ import random
 import torch
 import torch.nn as nn
 
-from fairseq.models import BaseFairseqModel, register_model, register_model_architecture
+from fairseq import utils
+from fairseq.models import register_model, register_model_architecture
 from fairseq.criterions.rlst_loss import LabelSmoothedCrossEntropy
+from fairseq.models import FairseqEncoder, FairseqIncrementalDecoder, FairseqEncoderDecoderModel
 
 
 class LeakyNet(nn.Module):
@@ -84,7 +86,7 @@ class LeakyResidualApproximator(nn.Module):
 
 
 @register_model('rlst')
-class RLST(BaseFairseqModel):
+class RLST(FairseqEncoderDecoderModel):
     """
     This class implements RLST algorithm presented in the paper. Given batch size of n, it creates n partially observable
     training or testing environments in which n interpreter agents operate in order to transform source sequences into the target ones.
@@ -92,12 +94,11 @@ class RLST(BaseFairseqModel):
     At t=0 each agent is fed with first source token. Then in a time loop it performs actions based on its observations
     and approximator state until all agents are terminated or the time is up.
     """
-    def __init__(self, approximator, testing_episode_max_time, trg_vocab_len, discount, m, mistranslation_loss,
+    def __init__(self, approximator, trg_vocab_len, discount, m, mistranslation_loss,
                  src_eos_index, src_null_index, src_pad_index, trg_eos_index, trg_null_index, trg_pad_index,
-                 ):
-        super().__init__()
+                 incremental_encoder, incremental_decoder):
+        super().__init__(incremental_encoder, incremental_decoder)
         self.approximator = approximator
-        self.testing_episode_max_time = testing_episode_max_time
         self.trg_vocab_len = trg_vocab_len
         self.DISCOUNT = discount
         self.M = m  # Read after eos punishment
@@ -110,26 +111,34 @@ class RLST(BaseFairseqModel):
         self.TRG_NULL = trg_null_index
         self.TRG_PAD = trg_pad_index
 
+        self.encoder = incremental_encoder
+        self.decoder = incremental_decoder
+
     @staticmethod
     def add_args(parser):
         # Models can override this method to add new command-line arguments.
         # Here we'll add some new command-line arguments to configure dropout
         # and the dimensionality of the embeddings and hidden states.
         parser.add_argument(
-            '--rnn_hid_dim', type=int, metavar='N',
+            '--rnn-hid-dim', type=int, metavar='N',
             help='dimensionality of the rnn hiddens state',
         )
         parser.add_argument(
-            '--rnn_num_layers', type=int, metavar='N',
+            '--rnn-num-layers', type=int, metavar='N',
             help='number of rnn layers',
         )
         parser.add_argument(
-            '--src_embed_dim', type=int, metavar='N',
+            '--src-embed-dim', type=int, metavar='N',
             help='dimension of embedding layer for source tokens',
         )
         parser.add_argument(
-            '--trg_embed_dim', type=int, metavar='N',
+            '--trg-embed-dim', type=int, metavar='N',
             help='dimension of embedding layer for target tokens',
+        )
+        parser.add_argument(
+            '--max-testing-time', type=int, metavar='N',
+            help='maximum duration of a testing episode, e.g. during generation. If too low, agents will not be'
+                 'able to process the whole sequence. By default it is adjusted based on length of source sentence'
         )
         parser.add_argument(
             '--discount', type=float, metavar='N',
@@ -140,23 +149,19 @@ class RLST(BaseFairseqModel):
             help='read after source eos punishment',
         )
         parser.add_argument(
-            '--rnn_dropout', type=float, metavar='N',
+            '--rnn-dropout', type=float, metavar='N',
             help='dropout between rnn layers',
         )
         parser.add_argument(
-            '--embedding_dropout', type=float, metavar='N',
+            '--embedding-dropout', type=float, metavar='N',
             help='dropout after embedding layers',
         )
 
     @classmethod
     def build_model(cls, args, task):
-        # Fairseq initializes models by calling the ``build_model()``
-        # function. This provides more flexibility, since the returned model
-        # instance can be of a different type than the one that was called.
-        # In this case we'll just return a SimpleLSTMModel instance.
         source_vocab = task.source_dictionary
         target_vocab = task.target_dictionary
-        TESTING_EPISODE_MAX_TIME = 400
+        TESTING_EPISODE_MAX_TIME = args.max_testing_time
 
         approximator = LeakyResidualApproximator(
             src_vocab_len=len(source_vocab.symbols),
@@ -169,24 +174,28 @@ class RLST(BaseFairseqModel):
             rnn_num_layers=args.rnn_num_layers)
 
         mistranslation_loss = LabelSmoothedCrossEntropy(label_smoothing=args.smoothing)
+        incremental_encoder = RLSTIncrementalEncoder(task.source_dictionary)
+        incremental_decoder = RLSTIncrementalDecoder(task.target_dictionary,
+                                                     approximator,
+                                                     TESTING_EPISODE_MAX_TIME,
+                                                     source_vocab.eos_index,
+                                                     source_vocab.bos_index,
+                                                     target_vocab.eos_index,
+                                                     target_vocab.bos_index
+                                                     )
 
-        model = RLST(approximator, TESTING_EPISODE_MAX_TIME, len(target_vocab), args.discount, args.m,
+        model = RLST(approximator, len(target_vocab), args.discount, args.m,
                      mistranslation_loss,
                      source_vocab.eos_index,
                      source_vocab.bos_index,
                      source_vocab.pad_index,
                      target_vocab.eos_index,
                      target_vocab.bos_index,
-                     target_vocab.pad_index)
-
+                     target_vocab.pad_index,
+                     incremental_encoder, incremental_decoder)
         return model
 
-    def forward(self, src, trg=None, epsilon=None, teacher_forcing=None):
-        if self.training:
-            return self._training_episode(src, trg, epsilon, teacher_forcing)
-        return self._testing_episode(src)
-
-    def _training_episode(self, src, trg, epsilon, teacher_forcing):
+    def forward(self, src, trg, epsilon, teacher_forcing):
         """
         :param src: Tensor of shape batch size x src seq length
         :param trg: Tensor of shape batch size x trg seq length
@@ -203,7 +212,7 @@ class RLST(BaseFairseqModel):
         batch_size = src.size()[0]
         src_seq_len = src.size()[1]
         trg_seq_len = trg.size()[1]
-        word_output = torch.full((batch_size, 1), int(self.TRG_NULL), device=device)
+        word_output = torch.full((batch_size, 1), self.TRG_NULL, device=device)
         rnn_state = torch.zeros((self.approximator.rnn_num_layers, batch_size, self.approximator.rnn_hid_dim), device=device)
 
         token_probs = torch.zeros((batch_size, trg_seq_len, self.trg_vocab_len), device=device)
@@ -273,59 +282,101 @@ class RLST(BaseFairseqModel):
 
         return token_probs, Q_used, Q_target.detach_(), logging_is_read, logging_is_write
 
-    def _testing_episode(self, src):
-        """
-        :param src: Tensor of shape batch size x testing_episode_max_time
-        :return: token_probs: Tensor of shape batch size x trg seq len x number of features e.g. target vocab length
-        :return: None
-        :return: None
-        :return: logging_is_read: Bool tensor of shape batch size x time. Data about taken read actions
-        :return: logging_is_write: Bool tensor of shape batch size x time. Data about taken write actions
-        """
 
-        device = src.device
+class RLSTIncrementalEncoder(FairseqEncoder):
+    def __init__(self, dictionary):
+        super().__init__(dictionary)
+
+    def forward(self, src_tokens, src_lengths):
+        return src_tokens
+
+    def reorder_encoder_out(self, encoder_out, new_order):
+        return encoder_out.index_select(0, new_order)
+
+
+class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
+    def __init__(self, dictionary, approximator, testing_episode_max_time,
+                 src_eos_index, src_null_index, trg_eos_index, trg_null_index):
+
+        super().__init__(dictionary)
+        self.TESTING_EPISODE_MAX_TIME = testing_episode_max_time
+        self.approximator = approximator
+        self.SRC_EOS = src_eos_index
+        self.SRC_NULL = src_null_index
+        self.TRG_EOS = trg_eos_index
+        self.TRG_NULL = trg_null_index
+
+        self.trg_vocab_len = len(dictionary)
+
+    def forward(self, prev_output_tokens, encoder_out, incremental_state=None):
+        src = encoder_out
         batch_size = src.size()[0]
         src_seq_len = src.size()[1]
-        word_output = torch.full((batch_size, 1), int(self.TRG_NULL), device=device)
-        rnn_state = torch.zeros((self.approximator.rnn_num_layers, batch_size, self.approximator.rnn_hid_dim), device=device)
+        testing_episode_max_time = self.TESTING_EPISODE_MAX_TIME
+        if not testing_episode_max_time:
+            testing_episode_max_time = 3 * src_seq_len + 5
+        device = src.device
 
-        token_probs = torch.zeros((batch_size, self.testing_episode_max_time, self.trg_vocab_len), device=device)
+        cached_state = utils.get_incremental_state(self, incremental_state, 'cached_state')
+        if cached_state is None:
+            i = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
+            t = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
+            rnn_state = torch.zeros((self.approximator.rnn_num_layers, batch_size, self.approximator.rnn_hid_dim), device=device)
+            input = src[:, :1]
+            word_output = torch.full((batch_size, 1), self.TRG_NULL, device=device)
+        else:
+            input = torch.full((batch_size, 1), self.SRC_NULL, device=device)
+            i = cached_state["i"]
+            t = cached_state["t"]
+            rnn_state = cached_state["rnn_state"]
+            word_output = prev_output_tokens[:, -1:].clone().detach()
 
-        writing_agents = torch.full((batch_size, 1), False, device=device)
-        naughty_agents = torch.full((batch_size, 1), False, device=device)  # Want more input after input eos
-        after_eos_agents = torch.full((batch_size, 1), False, device=device)  # Already outputted EOS
+        frozen_agents = torch.full((batch_size, 1), False, device=device)
+        token_probs = torch.zeros((batch_size, 1, self.trg_vocab_len), device=device)
 
-        i = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)  # input indices
-        j = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)  # output indices
+        while True:
+            output, new_rnn_state = self.approximator(input, word_output, rnn_state)
+            rnn_state[:, ~frozen_agents.squeeze(1), :] = new_rnn_state[:, ~frozen_agents.squeeze(1), :]
 
-        logging_is_read = torch.full((batch_size, self.testing_episode_max_time), False, dtype=torch.bool, device=device)
-        logging_is_write = torch.full((batch_size, self.testing_episode_max_time), False, dtype=torch.bool, device=device)
+            failed_agents = t > testing_episode_max_time
 
-        for t in range(self.testing_episode_max_time):
-            input = torch.gather(src, 1, i)
-            input[writing_agents] = self.SRC_NULL
-            input[naughty_agents] = self.SRC_EOS
-            output, rnn_state = self.approximator(input, word_output, rnn_state)
-            _, word_output = torch.max(output[:, :, :-2], dim=2)
             action = torch.max(output[:, :, -2:], 2)[1]
+            reading_agents = (action == 0) * (~frozen_agents) * (~failed_agents)
+            writing_agents = (action == 1) * (~frozen_agents) + failed_agents
+            frozen_agents[writing_agents] = True
 
-            reading_agents = (action == 0)
-            writing_agents = (action == 1)
+            token_probs[writing_agents.squeeze(1), 0, :] = output[writing_agents.squeeze(1), 0, :-2]
 
-            logging_is_read[:, t] = (~after_eos_agents * reading_agents).squeeze_(1)
-            logging_is_write[:, t] = (~after_eos_agents * writing_agents).squeeze_(1)
-
-            token_probs[writing_agents.squeeze(1), j[writing_agents], :] = output[writing_agents.squeeze(1), 0, :-2]
-
-            after_eos_agents += (word_output == self.TRG_EOS)
             naughty_agents = reading_agents * (torch.gather(src, 1, i) == self.SRC_EOS)
             i = i + ~naughty_agents * reading_agents
-            j = j + writing_agents
-
             i[i >= src_seq_len] = src_seq_len - 1
-            word_output[reading_agents] = self.TRG_NULL
 
-        return token_probs, None, None, logging_is_read, logging_is_write
+            input = torch.gather(src, 1, i)
+            word_output[reading_agents] = self.TRG_NULL
+            t[reading_agents + writing_agents] += 1
+
+            if torch.all(frozen_agents):
+                cached_state_new = {
+                    "i": i,
+                    "t": t,
+                    "rnn_state": rnn_state
+                }
+                utils.set_incremental_state(self, incremental_state, 'cached_state', cached_state_new)
+                return token_probs, None
+
+    def reorder_incremental_state(self, incremental_state, new_order):
+        cached_state = utils.get_incremental_state(self, incremental_state, 'cached_state')
+        i = cached_state["i"].index_select(0, new_order)
+        t = cached_state["t"].index_select(0, new_order)
+        rnn_state = cached_state["rnn_state"].index_select(1, new_order)
+
+        cached_state_new = {
+                "i": i,
+                "t": t,
+                "rnn_state": rnn_state
+            }
+
+        utils.set_incremental_state(self, incremental_state, 'cached_state', cached_state_new)
 
 
 @register_model_architecture('rlst', 'rlst')
@@ -341,4 +392,5 @@ def rlst(args):
     args.trg_embed_dim = getattr(args, 'trg_embed_dim', 256)
     args.discount = getattr(args, 'discount', 0.9)
     args.m = getattr(args, 'm', 7.0)
+    args.max_testing_time = getattr(args, 'max_testing_time', None)
 

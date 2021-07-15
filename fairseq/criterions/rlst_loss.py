@@ -59,19 +59,23 @@ class RLSTCriterionConfig(FairseqDataclass):
     )
     smoothing: float = field(
         default=0.0,
-        metadata={"help": "label smoothing for cross entropy misstranslation loss"},
+        metadata={"help": "label smoothing for cross entropy mistranslation loss"},
     )
-    epsilon: float = field(
+    epsilon_max: float = field(
         default=0.4,
-        metadata={"help": "epsilon"}
+        metadata={"help": "starting epsilon value"}
     )
-    teacher_forcing: float = field(
+    epsilon_min: float = field(
+        default=0.4,
+        metadata={"help": "ending epsilon value"}
+    )
+    teacher_forcing_max: float = field(
         default=1.0,
-        metadata={"help": "teacher force"}
+        metadata={"help": "starting teacher force"}
     )
-    rho: float = field(
-        default=0.99,
-        metadata={"help": "rho"}
+    teacher_forcing_min: float = field(
+        default=1.0,
+        metadata={"help": "final teacher force"}
     )
     eta_min: float = field(
         default=0.02,
@@ -81,6 +85,10 @@ class RLSTCriterionConfig(FairseqDataclass):
         default=0.2,
         metadata={"help": "maximum value of policy multiplier"}
     )
+    rho: float = field(
+        default=0.99,
+        metadata={"help": "rho"}
+    )
     sentence_avg: bool = II("optimization.sentence_avg")
 
 
@@ -88,7 +96,7 @@ class RLSTCriterionConfig(FairseqDataclass):
     "rlst_criterion", dataclass=RLSTCriterionConfig
 )
 class RLSTCriterion(FairseqCriterion):
-    def __init__(self, task, sentence_avg, N, smoothing, epsilon, teacher_forcing, rho, eta_min, eta_max):
+    def __init__(self, task, sentence_avg, N, smoothing, eta_min, eta_max, epsilon_max, epsilon_min, teacher_forcing_max, teacher_forcing_min, rho):
         super().__init__(task)
         if sentence_avg:
             raise NotImplementedError("RLST does not support sentence-avg")
@@ -98,72 +106,96 @@ class RLSTCriterion(FairseqCriterion):
         self.policy_loss_weight = 0
         self.mistranslation_criterion = LabelSmoothedCrossEntropy(ignore_index=self.padding_idx, label_smoothing=smoothing)
         self.policy_criterion = nn.MSELoss(reduction="sum")
-        self.n = -1
+        self.n = 0
         self.N = N
-        self.epsilon = epsilon
-        self.teacher_forcing = teacher_forcing
         self.eta = None
         self.eta_min = eta_min
         self.eta_max = eta_max
+        self.epsilon = None
+        self.epsilon_max = epsilon_max
+        self.epsilon_min = epsilon_min
+        self.teacher_forcing = None
+        self.teacher_forcing_max = teacher_forcing_max
+        self.teacher_forcing_min = teacher_forcing_min
 
     def forward(self, model, sample, reduce=True):
         src_tokens = sample["net_input"]["src_tokens"]
         trg_tokens = sample["target"]
+        self.teacher_forcing = self.teacher_forcing_min + (self.teacher_forcing_max - self.teacher_forcing_min) * math.e ** ((-3) * self.n / self.N)
+        self.epsilon = self.epsilon_min + (self.epsilon_max - self.epsilon_min) * math.e ** ((-3) * self.n / self.N)
         word_outputs, Q_used, Q_target, is_read, is_write = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing)
         weighted_loss, mistranslation_loss, nll_loss, policy_loss = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
+        self.n += 1
         total_time_steps = int((is_write + is_read).sum())
         ntokens = sample["ntokens"]
+        write_lead, write_lead_relative = self.compute_write_lead_metrics(is_read, is_write)
+
         logging_output = {
             "ntokens": ntokens,
             "nsentences": sample["target"].size(0),
             "mistranslation_loss": ntokens * mistranslation_loss.data,
             "nll_loss": ntokens * nll_loss.data,
-            "policy_loss": total_time_steps * policy_loss.data if self.training else -1.0,
+            "policy_loss": total_time_steps * policy_loss.data,
             "total_time_steps": total_time_steps,
             "eta": self.eta,
+            "epsilon": self.epsilon,
+            "teacher_forcing": self.teacher_forcing,
             "workers_num": 1,
             "total_reads": int(is_read.sum()),
-            "total_writes": int(is_write.sum())
+            "write_lead": float(write_lead.sum()),
+            "write_lead_relative": float(write_lead_relative.sum())
         }
 
         return weighted_loss * ntokens, ntokens, logging_output
 
     def compute_loss(self, word_outputs, trg, Q_used, Q_target):
-        if not self.training:
-            word_outputs = word_outputs[:, :trg.size()[1], :]
 
         word_outputs = word_outputs.reshape(-1, word_outputs.shape[-1])
         trg = trg.view(-1)
 
         mistranslation_loss, nll_loss = self.mistranslation_criterion(word_outputs, trg, reduce=True)
-        if self.training:
-            self.n += 1
-            self.eta = self.eta_max - (self.eta_max - self.eta_min) * math.e ** ((-3) * self.n / self.N)
-            policy_loss = self.policy_criterion(Q_used, Q_target)/torch.count_nonzero(Q_target)
-            self.rho_to_n *= self.RHO
-            w_k = (self.RHO - self.rho_to_n) / (1 - self.rho_to_n)
-            self.mistranslation_loss_weight = w_k * self.mistranslation_loss_weight + (1 - w_k) * float(mistranslation_loss)
-            self.policy_loss_weight = w_k * self.policy_loss_weight + (1 - w_k) * float(policy_loss)
-            weighted_loss = self.eta * policy_loss / self.policy_loss_weight + mistranslation_loss / self.mistranslation_loss_weight
-            return weighted_loss, mistranslation_loss, nll_loss, policy_loss
-        else:
-            return -1.0, mistranslation_loss, nll_loss, -1.0
+        self.eta = self.eta_max - (self.eta_max - self.eta_min) * math.e ** ((-3) * self.n / self.N)
+        policy_loss = self.policy_criterion(Q_used, Q_target)/torch.count_nonzero(Q_target)
+        self.rho_to_n *= self.RHO
+        w_k = (self.RHO - self.rho_to_n) / (1 - self.rho_to_n)
+        self.mistranslation_loss_weight = w_k * self.mistranslation_loss_weight + (1 - w_k) * float(mistranslation_loss)
+        self.policy_loss_weight = w_k * self.policy_loss_weight + (1 - w_k) * float(policy_loss)
+        weighted_loss = self.eta * policy_loss / self.policy_loss_weight + mistranslation_loss / self.mistranslation_loss_weight
+        return weighted_loss, mistranslation_loss, nll_loss, policy_loss
+
+    @staticmethod
+    def compute_write_lead_metrics(is_read, is_write):
+        """This metric measures how much write action is ahead of read action in time."""
+        with torch.no_grad():
+            action_weights = torch.cumsum(is_read + is_write, dim=1)
+            episode_length = action_weights[:, -1]
+            read_weights = action_weights - 1
+            read_weights[~is_read] = 0
+            write_weights = action_weights - 1
+            write_weights[~is_write] = 0
+            mean_read = torch.sum(read_weights, dim=1) / (is_read.sum(dim=1) + 1e-8)
+            mean_write = torch.sum(write_weights, dim=1) / (is_write.sum(dim=1) + 1e-8)
+            write_lead = mean_write - mean_read
+            return write_lead, write_lead / episode_length
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:
         """Aggregate logging outputs from data parallel training."""
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
+        nsentences = sum(log.get("nsentences", 0) for log in logging_outputs)
         mistranslation_loss = sum(log.get("mistranslation_loss", 0) for log in logging_outputs)
         nll_loss = sum(log.get("nll_loss", 0) for log in logging_outputs)
         policy_loss = sum(log.get("policy_loss", 0) for log in logging_outputs)
         eta = sum(log.get("eta", 0) for log in logging_outputs)
+        epsilon = sum(log.get("epsilon", 0) for log in logging_outputs)
+        teacher_forcing = sum(log.get("teacher_forcing", 0) for log in logging_outputs)
         workers = sum(log.get("workers_num", 0) for log in logging_outputs)
         total_time_steps = sum(log.get("total_time_steps", 0) for log in logging_outputs)
 
         total_reads = sum(log.get("total_reads", 0) for log in logging_outputs)
-        total_writes = sum(log.get("total_writes", 0) for log in logging_outputs)
         read_relative_frequency = total_reads / total_time_steps
-        write_relative_frequency = total_writes / total_time_steps
+        write_lead = sum(log.get("write_lead", 0) for log in logging_outputs)
+        write_lead_relative = sum(log.get("write_lead_relative", 0) for log in logging_outputs)
 
         metrics.log_scalar("loss", mistranslation_loss / ntokens / math.log(2), ntokens, round=2, priority=1)
         metrics.log_scalar("nll_loss", nll_loss / ntokens / math.log(2), ntokens, round=2, priority=2)
@@ -171,8 +203,12 @@ class RLSTCriterion(FairseqCriterion):
         metrics.log_scalar("policy_loss", policy_loss / total_time_steps, total_time_steps, round=2, priority=4)
 
         metrics.log_scalar("eta", eta / workers, 0, round=2, priority=9)
+        metrics.log_scalar("epsilon", epsilon / workers, 0, round=2, priority=9)
+        metrics.log_scalar("tf", teacher_forcing / workers, 0, round=2, priority=9)
+
         metrics.log_scalar("read_rf", read_relative_frequency, ntokens, round=2, priority=10)
-        metrics.log_scalar("write_rf", write_relative_frequency, ntokens, round=2, priority=11)
+        metrics.log_scalar("write_lead", write_lead / nsentences, nsentences, round=2, priority=11)
+        metrics.log_scalar("write_lead_r", write_lead_relative / nsentences, nsentences, round=2, priority=12)
         metrics.log_scalar("ntokens", ntokens, round=2, priority=12)
 
     @staticmethod
