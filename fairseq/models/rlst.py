@@ -149,6 +149,103 @@ class LeakyLSTM(nn.Module):
         return h_0.index_select(1, new_order), c_0.index_select(1, new_order)
 
 
+class SexBomb(nn.Module):
+    def __init__(self,
+                 src_vocab_len,
+                 trg_vocab_len,
+                 rnn_hid_dim,
+                 rnn_dropout,
+                 rnn_num_layers,
+                 src_embed_dim=256,
+                 trg_embed_dim=256,
+                 embedding_dropout=0.0,
+                 ):
+        super().__init__()
+
+        class SharedEmbedding(nn.Module):
+            def __init__(self,
+                         src_vocab_len,
+                         trg_vocab_len,
+                         rnn_hid_dim,
+                         src_embed_dim=256,
+                         trg_embed_dim=256,
+                         dropout=0.0,
+                         ):
+                super().__init__()
+                self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
+                self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
+                self.linear = nn.Linear(src_embed_dim + trg_embed_dim, rnn_hid_dim)
+                self.activation = nn.LeakyReLU()
+                self.dropout = nn.Dropout(dropout)
+                self.rnn = nn.LSTM(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=1, batch_first=True, dropout=0.0)
+
+            def forward(self, src, prev_out, rnn_state):
+                src_embedded = self.src_embedding(src)
+                trg_embedded = self.trg_embedding(prev_out)
+                linear_in = self.dropout(torch.cat((src_embedded, trg_embedded), dim=2))
+                rnn_in = self.dropout(self.activation(self.linear(linear_in)))
+                return self.rnn(rnn_in, rnn_state)
+
+        class Head(nn.Module):
+            def __init__(self,
+                         input_dim,
+                         rnn_hid_dim,
+                         out_dim,
+                         dropout=0.0,
+                         ):
+                super().__init__()
+                self.linear1 = nn.Linear(input_dim, rnn_hid_dim)
+                self.activation = nn.LeakyReLU()
+                self.dropout = nn.Dropout(dropout)
+                self.rnn = nn.LSTM(rnn_hid_dim, rnn_hid_dim, num_layers=1, batch_first=True, dropout=0.0)
+                self.linear2 = nn.Linear(rnn_hid_dim, rnn_hid_dim)
+                self.output = nn.Linear(rnn_hid_dim, out_dim)
+
+            def forward(self, shared_in, rnn_state):
+                rnn_in = self.dropout(self.activation(self.linear1(shared_in)))
+                rnn_out, rnn_new_state = self.rnn(rnn_in, rnn_state)
+                out_in = self.dropout(self.activation(self.linear2(rnn_out)))
+                return self.output(out_in), rnn_new_state
+
+        self.rnn_hid_dim = rnn_hid_dim
+        self.shared_embedding = SharedEmbedding(src_vocab_len, trg_vocab_len, rnn_hid_dim, src_embed_dim, trg_embed_dim, embedding_dropout)
+        self.token_head = Head(rnn_hid_dim, rnn_hid_dim, trg_vocab_len, rnn_dropout)
+        self.policy_head = Head(rnn_hid_dim, 128, 2, rnn_dropout)
+
+    def forward(self, src, previous_output, rnn_state):
+        shared_out, rnn_state["embed"] = self.shared_embedding(src, previous_output, rnn_state["embed"])
+        token_out, rnn_state["token_head"] = self.token_head(shared_out, rnn_state["token_head"])
+        policy_out, rnn_state["policy_head"] = self.policy_head(shared_out, rnn_state["policy_head"])
+        return torch.cat((token_out, policy_out), dim=2), rnn_state
+
+    def init_state(self, batch_size, device):
+        return {
+            "embed":
+                (torch.zeros((1, batch_size, self.rnn_hid_dim), device=device),
+                 torch.zeros((1, batch_size, self.rnn_hid_dim), device=device)),
+            "token_head":
+                (torch.zeros((1, batch_size, self.rnn_hid_dim), device=device),
+                 torch.zeros((1, batch_size, self.rnn_hid_dim), device=device)),
+            "policy_head":
+                (torch.zeros((1, batch_size, 128), device=device),
+                 torch.zeros((1, batch_size, 128), device=device))
+        }
+
+    def update_state(self, state, new_state, agents_ignored):
+        for key in state.keys():
+            h_0, c_0 = state[key]
+            h_0_new, c_0_new = new_state
+            h_0[:, ~agents_ignored, :] = h_0_new[:, ~agents_ignored, :]
+            c_0[:, ~agents_ignored, :] = c_0_new[:, ~agents_ignored, :]
+        return state
+
+    def reorder_state(self, state, new_order):
+        for key in state.keys():
+            h_0, c_0 = state[key]
+            state[key] = h_0.index_select(1, new_order), c_0.index_select(1, new_order)
+        return state
+
+
 @register_model('rlst')
 class RLST(FairseqEncoderDecoderModel):
     """
@@ -227,7 +324,7 @@ class RLST(FairseqEncoderDecoderModel):
         target_vocab = task.target_dictionary
         TESTING_EPISODE_MAX_TIME = args.max_testing_time
 
-        approximator = LeakyLSTM(
+        approximator = SexBomb(
             src_vocab_len=len(source_vocab.symbols),
             trg_vocab_len=len(target_vocab.symbols),
             src_embed_dim=args.src_embed_dim,
