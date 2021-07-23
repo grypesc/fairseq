@@ -184,7 +184,8 @@ class SexBomb(nn.Module):
                 trg_embedded = self.trg_embedding(prev_out)
                 linear_in = self.dropout(torch.cat((src_embedded, trg_embedded), dim=2))
                 rnn_in = self.dropout(self.activation(self.linear(linear_in)))
-                return self.rnn(rnn_in, rnn_state)
+                rnn_out, new_rnn_state = self.rnn(rnn_in, rnn_state)
+                return rnn_out + rnn_in, new_rnn_state
 
         class Head(nn.Module):
             def __init__(self,
@@ -210,7 +211,7 @@ class SexBomb(nn.Module):
         self.rnn_hid_dim = rnn_hid_dim
         self.shared_embedding = SharedEmbedding(src_vocab_len, trg_vocab_len, rnn_hid_dim, src_embed_dim, trg_embed_dim, embedding_dropout)
         self.token_head = Head(rnn_hid_dim, rnn_hid_dim, trg_vocab_len, rnn_dropout)
-        self.policy_head = Head(rnn_hid_dim, 128, 2, rnn_dropout)
+        self.policy_head = Head(rnn_hid_dim, 512, 2, rnn_dropout)
 
     def forward(self, src, previous_output, rnn_state):
         shared_out, rnn_state["embed"] = self.shared_embedding(src, previous_output, rnn_state["embed"])
@@ -227,14 +228,14 @@ class SexBomb(nn.Module):
                 (torch.zeros((1, batch_size, self.rnn_hid_dim), device=device),
                  torch.zeros((1, batch_size, self.rnn_hid_dim), device=device)),
             "policy_head":
-                (torch.zeros((1, batch_size, 128), device=device),
-                 torch.zeros((1, batch_size, 128), device=device))
+                (torch.zeros((1, batch_size, 512), device=device),
+                 torch.zeros((1, batch_size, 512), device=device))
         }
 
     def update_state(self, state, new_state, agents_ignored):
         for key in state.keys():
             h_0, c_0 = state[key]
-            h_0_new, c_0_new = new_state
+            h_0_new, c_0_new = new_state[key]
             h_0[:, ~agents_ignored, :] = h_0_new[:, ~agents_ignored, :]
             c_0[:, ~agents_ignored, :] = c_0_new[:, ~agents_ignored, :]
         return state
