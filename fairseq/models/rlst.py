@@ -1,3 +1,4 @@
+import copy
 import random
 import torch
 import torch.nn as nn
@@ -205,7 +206,7 @@ class SexBomb(nn.Module):
             def forward(self, shared_in, rnn_state):
                 rnn_in = self.dropout(self.activation(self.linear1(shared_in)))
                 rnn_out, rnn_new_state = self.rnn(rnn_in, rnn_state)
-                out_in = self.dropout(self.activation(self.linear2(rnn_out)))
+                out_in = self.dropout(self.activation(self.linear2(rnn_out + rnn_in)))
                 return self.output(out_in), rnn_new_state
 
         self.rnn_hid_dim = rnn_hid_dim
@@ -497,8 +498,8 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
         token_probs = torch.zeros((batch_size, 1, self.trg_vocab_len), device=device)
 
         while True:
-            output, new_rnn_state = self.approximator(input, word_output, rnn_state)
-            rnn_state = self.approximator.update_state(rnn_state, new_rnn_state, frozen_agents.squeeze(1))
+            output, new_rnn_state = self.approximator(input, word_output, copy.deepcopy(rnn_state))
+            rnn_state = self.approximator.update_state(copy.deepcopy(rnn_state), new_rnn_state, frozen_agents.squeeze(1))
 
             failed_agents = t > testing_episode_max_time
 
