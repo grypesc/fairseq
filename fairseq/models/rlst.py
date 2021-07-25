@@ -229,8 +229,8 @@ class SexBomb(nn.Module):
                 (torch.zeros((1, batch_size, self.rnn_hid_dim), device=device),
                  torch.zeros((1, batch_size, self.rnn_hid_dim), device=device)),
             "policy_head":
-                (torch.zeros((1, batch_size, 512), device=device),
-                 torch.zeros((1, batch_size, 512), device=device))
+                (torch.zeros((1, batch_size, self.rnn_hid_dim), device=device),
+                 torch.zeros((1, batch_size, self.rnn_hid_dim), device=device))
         }
 
     def update_state(self, state, new_state, agents_ignored):
