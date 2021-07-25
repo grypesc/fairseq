@@ -178,7 +178,7 @@ class SexBomb(nn.Module):
                 self.linear = nn.Linear(src_embed_dim + trg_embed_dim, rnn_hid_dim)
                 self.activation = nn.LeakyReLU()
                 self.dropout = nn.Dropout(dropout)
-                self.rnn = nn.LSTM(src_embed_dim + trg_embed_dim, rnn_hid_dim, num_layers=1, batch_first=True, dropout=0.0)
+                self.rnn = nn.LSTM(rnn_hid_dim, rnn_hid_dim, num_layers=1, batch_first=True, dropout=0.0)
 
             def forward(self, src, prev_out, rnn_state):
                 src_embedded = self.src_embedding(src)
@@ -212,7 +212,7 @@ class SexBomb(nn.Module):
         self.rnn_hid_dim = rnn_hid_dim
         self.shared_embedding = SharedEmbedding(src_vocab_len, trg_vocab_len, rnn_hid_dim, src_embed_dim, trg_embed_dim, embedding_dropout)
         self.token_head = Head(rnn_hid_dim, rnn_hid_dim, trg_vocab_len, rnn_dropout)
-        self.policy_head = Head(rnn_hid_dim, 512, 2, rnn_dropout)
+        self.policy_head = Head(rnn_hid_dim, rnn_hid_dim, 2, rnn_dropout)
 
     def forward(self, src, previous_output, rnn_state):
         shared_out, rnn_state["embed"] = self.shared_embedding(src, previous_output, rnn_state["embed"])
