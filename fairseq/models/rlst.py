@@ -150,7 +150,7 @@ class LeakyLSTM(nn.Module):
         return h_0.index_select(1, new_order), c_0.index_select(1, new_order)
 
 
-class SexBomb(nn.Module):
+class Bomb(nn.Module):
     def __init__(self,
                  src_vocab_len,
                  trg_vocab_len,
