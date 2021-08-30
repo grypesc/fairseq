@@ -58,7 +58,7 @@ CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --arch tra
 --eval-bleu-remove-bpe --best-checkpoint-metric bleu --maximize-best-checkpoint-metric --no-epoch-checkpoints \ 
 --max-epoch 100 --save-dir checkpoints/transformer
 ```
-Training the autoencoder model:
+Training the encoder decoder LSTM model:
 ```shell
 CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --optimizer adam --lr 1e-3 --clip-norm 10.0  --max-tokens 4096 \
 --save-dir checkpoints/lstm/ --arch lstm_wiseman_iwslt_de_en --eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe \
@@ -66,7 +66,7 @@ CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --optimize
 --max-epoch 100
 ```
 
-Trained lstm and transformer models can be evaluated on the test set using the `fairseq-generate` command:
+Trained LSTM and transformer models can be evaluated on the test set using the `fairseq-generate` command:
 ```shell
 CUDA_VISIBLE_DEVICES=0 fairseq-generate data-bin/iwslt14.tokenized.de-en/ --path <path to model checkpoints directory>/checkpoint_best.pt --beam 1 --remove-bpe --quiet
 ```
