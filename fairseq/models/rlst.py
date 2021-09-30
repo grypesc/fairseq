@@ -116,8 +116,9 @@ class ConvApproximator(nn.Module):
         self.rnn_dropout = nn.Dropout(rnn_dropout)
         self.embedding_linear = nn.Linear(src_embed_dim + trg_embed_dim, rnn_hid_dim)
         self.rnns = nn.ModuleList([nn.GRU(rnn_hid_dim, rnn_hid_dim, batch_first=True) for _ in range(rnn_num_layers)])
-        self.conv = nn.Conv1d(rnn_num_layers, 512, kernel_size=(1,))
-        self.linear = nn.Linear(512, rnn_hid_dim)
+        self.conv1 = nn.Conv1d(rnn_num_layers, 512, kernel_size=(1,))
+        self.conv2 = nn.Conv1d(512, 1, kernel_size=(1,))
+        self.linear = nn.Linear(rnn_hid_dim, rnn_hid_dim)
         self.activation = nn.LeakyReLU()
         self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 2)
 
@@ -131,8 +132,9 @@ class ConvApproximator(nn.Module):
         for i, rnn in enumerate(self.rnns):
             rnn_out, rnn_new_states[i, :] = self.activation(rnn(rnn_input, rnn_states[i:i + 1]))
 
-        conv_out = self.activation(rnn_new_states)
-        outputs = self.output(conv_out)
+        conv1_out = self.activation(self.conv1(rnn_new_states))
+        conv2_out = self.activation(self.conv2(conv1_out))
+        outputs = self.output(conv2_out)
         return outputs, rnn_new_states
 
     def init_state(self, batch_size, device):
@@ -200,7 +202,7 @@ class LeakyLSTM(nn.Module):
         return h_0.index_select(1, new_order), c_0.index_select(1, new_order)
 
 
-class Bomb(nn.Module):
+class DoubleHead(nn.Module):
     def __init__(self,
                  src_vocab_len,
                  trg_vocab_len,
@@ -376,7 +378,7 @@ class RLST(FairseqEncoderDecoderModel):
         target_vocab = task.target_dictionary
         TESTING_EPISODE_MAX_TIME = args.max_testing_time
 
-        approximator = SexBomb(
+        approximator = DoubleHead(
             src_vocab_len=len(source_vocab.symbols),
             trg_vocab_len=len(target_vocab.symbols),
             src_embed_dim=args.src_embed_dim,
