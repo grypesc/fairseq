@@ -96,58 +96,6 @@ class LeakyResidualApproximator(nn.Module):
         return state.index_select(1, new_order)
 
 
-class ConvApproximator(nn.Module):
-    def __init__(self,
-                 src_vocab_len,
-                 trg_vocab_len,
-                 src_embed_dim,
-                 trg_embed_dim,
-                 rnn_hid_dim,
-                 rnn_dropout,
-                 embedding_dropout,
-                 rnn_num_layers):
-        super().__init__()
-
-        self.rnn_hid_dim = rnn_hid_dim
-        self.rnn_num_layers = rnn_num_layers
-        self.src_embedding = nn.Embedding(src_vocab_len, src_embed_dim)
-        self.trg_embedding = nn.Embedding(trg_vocab_len, trg_embed_dim)
-        self.embedding_dropout = nn.Dropout(embedding_dropout)
-        self.rnn_dropout = nn.Dropout(rnn_dropout)
-        self.embedding_linear = nn.Linear(src_embed_dim + trg_embed_dim, rnn_hid_dim)
-        self.rnns = nn.ModuleList([nn.GRU(rnn_hid_dim, rnn_hid_dim, batch_first=True) for _ in range(rnn_num_layers)])
-        self.conv1 = nn.Conv1d(rnn_num_layers, 512, kernel_size=(1,))
-        self.conv2 = nn.Conv1d(512, 1, kernel_size=(1,))
-        self.linear = nn.Linear(rnn_hid_dim, rnn_hid_dim)
-        self.activation = nn.LeakyReLU()
-        self.output = nn.Linear(rnn_hid_dim, trg_vocab_len + 2)
-
-    def forward(self, src, previous_output, rnn_states):
-        src_embedded = self.embedding_dropout(self.src_embedding(src))
-        trg_embedded = self.embedding_dropout(self.trg_embedding(previous_output))
-
-        rnn_input = self.activation(self.embedding_linear(torch.cat((src_embedded, trg_embedded), dim=2)))
-        rnn_input = self.embedding_dropout(rnn_input)
-        rnn_new_states = torch.zeros(rnn_states.size(), device=src_embedded.device)
-        for i, rnn in enumerate(self.rnns):
-            rnn_out, rnn_new_states[i, :] = self.activation(rnn(rnn_input, rnn_states[i:i + 1]))
-
-        conv1_out = self.activation(self.conv1(rnn_new_states))
-        conv2_out = self.activation(self.conv2(conv1_out))
-        outputs = self.output(conv2_out)
-        return outputs, rnn_new_states
-
-    def init_state(self, batch_size, device):
-        return torch.zeros((self.rnn_num_layers, batch_size, self.rnn_hid_dim), device=device)
-
-    def update_state(self, state, new_state, agents_ignored):
-        state[:, ~agents_ignored, :] = new_state[:, ~agents_ignored, :]
-        return state
-
-    def reorder_state(self, state, new_order):
-        return state.index_select(1, new_order)
-
-
 class LeakyLSTM(nn.Module):
     def __init__(self,
                  src_vocab_len,
@@ -410,7 +358,7 @@ class RLST(FairseqEncoderDecoderModel):
                      incremental_encoder, incremental_decoder)
         return model
 
-    def forward(self, src, trg, epsilon, teacher_forcing):
+    def forward(self, src, trg, epsilon, teacher_forcing, rtf_delta, rtf_prob):
         """
         :param src: Tensor of shape batch size x src seq length
         :param trg: Tensor of shape batch size x trg seq length
@@ -451,6 +399,10 @@ class RLST(FairseqEncoderDecoderModel):
             random_action_agents = torch.rand((batch_size, 1), device=device) < epsilon
             random_action = torch.randint(low=0, high=2, size=(batch_size, 1), device=device)
             action[random_action_agents] = random_action[random_action_agents]
+
+            forced_to_read_agents = torch.rand((batch_size, 1), device=device) < rtf_prob
+            should_read_agents = (i - rtf_delta) / src_seq_len < j / trg_seq_len
+            action[forced_to_read_agents * should_read_agents] = 0
 
             Q_used[:, t] = torch.gather(output[:, 0, -2:], 1, action).squeeze_(1)
             Q_used[terminated_agents.squeeze(1), t] = 0

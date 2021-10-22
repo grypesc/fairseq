@@ -89,6 +89,10 @@ class RLSTCriterionConfig(FairseqDataclass):
         default=0.99,
         metadata={"help": "rho"}
     )
+    rtf_delta: float = field(
+        default=5.0,
+        metadata={"help": "rtf_delta"}
+    )
     sentence_avg: bool = II("optimization.sentence_avg")
 
 
@@ -96,7 +100,7 @@ class RLSTCriterionConfig(FairseqDataclass):
     "rlst_criterion", dataclass=RLSTCriterionConfig
 )
 class RLSTCriterion(FairseqCriterion):
-    def __init__(self, task, sentence_avg, N, smoothing, eta_min, eta_max, epsilon_max, epsilon_min, teacher_forcing_max, teacher_forcing_min, rho):
+    def __init__(self, task, sentence_avg, N, smoothing, eta_min, eta_max, epsilon_max, epsilon_min, teacher_forcing_max, teacher_forcing_min, rho, rtf_delta):
         super().__init__(task)
         if sentence_avg:
             raise NotImplementedError("RLST does not support sentence-avg")
@@ -108,6 +112,7 @@ class RLSTCriterion(FairseqCriterion):
         self.policy_criterion = nn.MSELoss(reduction="sum")
         self.n = 0
         self.N = N
+        self.rtf_delta = rtf_delta
         self.eta = None
         self.eta_min = eta_min
         self.eta_max = eta_max
@@ -123,12 +128,13 @@ class RLSTCriterion(FairseqCriterion):
         trg_tokens = sample["target"]
         self.teacher_forcing = self.teacher_forcing_min + (self.teacher_forcing_max - self.teacher_forcing_min) * math.e ** ((-3) * self.n / self.N)
         self.epsilon = self.epsilon_min + (self.epsilon_max - self.epsilon_min) * math.e ** ((-3) * self.n / self.N)
-        word_outputs, Q_used, Q_target, is_read, is_write = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing)
+        rtf_prob = math.e ** (-self.n/self.N)
+        word_outputs, Q_used, Q_target, is_read, is_write = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing, self.rtf_delta, rtf_prob)
         weighted_loss, mistranslation_loss, nll_loss, policy_loss = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
         self.n += 1
         total_time_steps = int((is_write + is_read).sum())
         ntokens = sample["ntokens"]
-        write_lead, write_lead_relative = self.compute_write_lead_metrics(is_read, is_write)
+        read_lead, read_lead_relative = self.compute_read_lead_metrics(is_read, is_write)
 
         logging_output = {
             "ntokens": ntokens,
@@ -139,11 +145,12 @@ class RLSTCriterion(FairseqCriterion):
             "total_time_steps": total_time_steps,
             "eta": self.eta,
             "epsilon": self.epsilon,
-            "teacher_forcing": self.teacher_forcing,
+            "tf": self.teacher_forcing,
+            "rtf_prob": rtf_prob,
             "workers_num": 1,
             "total_reads": int(is_read.sum()),
-            "write_lead": float(write_lead.sum()),
-            "write_lead_relative": float(write_lead_relative.sum())
+            "read_lead": float(read_lead.sum()),
+            "read_lead_relative": float(read_lead_relative.sum())
         }
 
         return weighted_loss * ntokens, ntokens, logging_output
@@ -164,7 +171,7 @@ class RLSTCriterion(FairseqCriterion):
         return weighted_loss, mistranslation_loss, nll_loss, policy_loss
 
     @staticmethod
-    def compute_write_lead_metrics(is_read, is_write):
+    def compute_read_lead_metrics(is_read, is_write):
         """This metric measures how much write action is ahead of read action in time."""
         with torch.no_grad():
             action_weights = torch.cumsum(is_read + is_write, dim=1)
@@ -175,8 +182,8 @@ class RLSTCriterion(FairseqCriterion):
             write_weights[~is_write] = 0
             mean_read = torch.sum(read_weights, dim=1) / (is_read.sum(dim=1) + 1e-8)
             mean_write = torch.sum(write_weights, dim=1) / (is_write.sum(dim=1) + 1e-8)
-            write_lead = mean_write - mean_read
-            return write_lead, write_lead / episode_length
+            read_lead = mean_write - mean_read
+            return read_lead, read_lead / episode_length
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:
@@ -188,28 +195,30 @@ class RLSTCriterion(FairseqCriterion):
         policy_loss = sum(log.get("policy_loss", 0) for log in logging_outputs)
         eta = sum(log.get("eta", 0) for log in logging_outputs)
         epsilon = sum(log.get("epsilon", 0) for log in logging_outputs)
-        teacher_forcing = sum(log.get("teacher_forcing", 0) for log in logging_outputs)
+        teacher_forcing = sum(log.get("tf", 0) for log in logging_outputs)
+        rtf_prob = sum(log.get("rtf_prob", 0) for log in logging_outputs)
         workers = sum(log.get("workers_num", 0) for log in logging_outputs)
         total_time_steps = sum(log.get("total_time_steps", 0) for log in logging_outputs)
 
         total_reads = sum(log.get("total_reads", 0) for log in logging_outputs)
         read_relative_frequency = total_reads / total_time_steps
-        write_lead = sum(log.get("write_lead", 0) for log in logging_outputs)
-        write_lead_relative = sum(log.get("write_lead_relative", 0) for log in logging_outputs)
+        read_lead = sum(log.get("read_lead", 0) for log in logging_outputs)
+        read_lead_relative = sum(log.get("read_lead_relative", 0) for log in logging_outputs)
 
         metrics.log_scalar("loss", mistranslation_loss / ntokens / math.log(2), ntokens, round=2, priority=1)
         metrics.log_scalar("nll_loss", nll_loss / ntokens / math.log(2), ntokens, round=2, priority=2)
         metrics.log_derived("ppl", lambda meters: utils.get_perplexity(meters["nll_loss"].avg, round=2, base=2), priority=3)
         metrics.log_scalar("policy_loss", policy_loss / total_time_steps, total_time_steps, round=2, priority=4)
 
-        metrics.log_scalar("eta", eta / workers, 0, round=2, priority=9)
-        metrics.log_scalar("epsilon", epsilon / workers, 0, round=2, priority=9)
-        metrics.log_scalar("tf", teacher_forcing / workers, 0, round=2, priority=9)
+        metrics.log_scalar("eta", eta / workers, 0, round=2, priority=26)
+        metrics.log_scalar("epsilon", epsilon / workers, 0, round=2, priority=27)
+        metrics.log_scalar("tf", teacher_forcing / workers, 0, round=2, priority=28)
+        metrics.log_scalar("rtf", rtf_prob / workers, 0, round=2, priority=29)
 
-        metrics.log_scalar("read_rf", read_relative_frequency, ntokens, round=2, priority=10)
-        metrics.log_scalar("write_lead", write_lead / nsentences, nsentences, round=2, priority=11)
-        metrics.log_scalar("write_lead_r", write_lead_relative / nsentences, nsentences, round=2, priority=12)
-        metrics.log_scalar("ntokens", ntokens, round=2, priority=12)
+        metrics.log_scalar("read_rf", read_relative_frequency, ntokens, round=2, priority=36)
+        metrics.log_scalar("read_lead", read_lead / nsentences, nsentences, round=2, priority=37)
+        metrics.log_scalar("read_lead_r", read_lead_relative / nsentences, nsentences, round=2, priority=38)
+        metrics.log_scalar("ntokens", ntokens, round=2, priority=39)
 
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:
