@@ -128,7 +128,7 @@ class RLSTCriterion(FairseqCriterion):
         trg_tokens = sample["target"]
         self.teacher_forcing = self.teacher_forcing_min + (self.teacher_forcing_max - self.teacher_forcing_min) * math.e ** ((-3) * self.n / self.N)
         self.epsilon = self.epsilon_min + (self.epsilon_max - self.epsilon_min) * math.e ** ((-3) * self.n / self.N)
-        rtf_prob = math.e ** (-self.n/self.N)
+        rtf_prob = math.e ** (-3 * self.n / self.N)
         word_outputs, Q_used, Q_target, is_read, is_write = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing, self.rtf_delta, rtf_prob)
         weighted_loss, mistranslation_loss, nll_loss, policy_loss = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
         self.n += 1
