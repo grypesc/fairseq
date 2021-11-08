@@ -41,13 +41,13 @@ fairseq-preprocess --source-lang de --target-lang en \
 ```
 This preprocesses data for German-English translation. To train and evaluate English-German translation models, switch `--source-lang` and `--target-lang` values in `fairseq-preprocess` command. 
 
-Training RLST:
+Training RLST on WMT15:
 ```shell
-CUDA_VISIBLE_DEVICES=0 fairseq-train data-bin/iwslt14.tokenized.de-en --arch rlst --criterion rlst_criterion --no-epoch-checkpoints \
---eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe --best-checkpoint-metric bleu --eval-bleu-args '{"beam": 5}' --maximize-best-checkpoint-metric \
---rnn_hid_dim 512 --rnn_num_layers 2 --rnn_dropout 0.1 --src_embed_dim 256 --trg_embed_dim 256  --embedding_dropout 0.1 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 fairseq-train data-bin/wmt15_en_de --arch rlst --criterion rlst_criterion --no-epoch-checkpoints \
+--eval-bleu --eval-bleu-detok moses --eval-bleu-remove-bpe --best-checkpoint-metric bleu --eval-bleu-args '{"beam": 1}' --maximize-best-checkpoint-metric \
+--rnn-hid-dim 512 --rnn-num-layers 2 --rnn-dropout 0.0 --src-embed-dim 256 --trg-embed-dim 256  --embedding-dropout 0.0 \
 --max-tokens 4096 --max-epoch 100 --optimizer adam --clip-norm 10.0 --lr 1e-3  --weight-decay 1e-5 --left-pad-source --rho 0.99 \
---epsilon_min 0.2 --epsilon_max 0.2 --rtf_delta 1.0 --N 50000 --m 7.0 --discount 0.90 --eta-min 0.02 --eta-max 0.2 \
+--epsilon-min 0.2 --epsilon-max 0.2 --rtf-delta 1.0 --N 100000 --m 7.0 --discount 0.90 --eta-min 0.02 --eta-max 0.2 \
 --save-dir checkpoints/rlst
 ```
 Training the transformer model:
