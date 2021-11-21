@@ -483,7 +483,7 @@ class RLST(FairseqEncoderDecoderModel):
                 Q_target[naughty_agents.squeeze(1), t] -= self.M
 
                 if torch.all(terminated_agents):
-                    return token_probs0, token_probs1, token_probs2, Q_used, Q_target.detach_(), logging_is_read, logging_is_write
+                    return token_probs0, token_probs1, token_probs2, who_writes, Q_used, Q_target.detach_(), logging_is_read, logging_is_write
 
         return token_probs0, token_probs1, token_probs2, who_writes, Q_used, Q_target.detach_(), logging_is_read, logging_is_write
 
