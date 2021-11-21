@@ -196,29 +196,54 @@ class DoubleHead(nn.Module):
                          dropout=0.0,
                          ):
                 super().__init__()
-                self.linear1 = nn.Linear(input_dim, rnn_hid_dim)
+                self.linear = nn.Linear(input_dim, rnn_hid_dim)
                 self.activation = nn.LeakyReLU()
                 self.dropout = nn.Dropout(dropout)
                 self.rnn = nn.LSTM(rnn_hid_dim, rnn_hid_dim, num_layers=1, batch_first=True, dropout=0.0)
+                self.linear1 = nn.Linear(rnn_hid_dim, rnn_hid_dim)
                 self.linear2 = nn.Linear(rnn_hid_dim, rnn_hid_dim)
+                self.linear3 = nn.Linear(rnn_hid_dim, rnn_hid_dim)
                 self.output = nn.Linear(rnn_hid_dim, out_dim)
 
             def forward(self, shared_in, rnn_state):
-                rnn_in = self.dropout(self.activation(self.linear1(shared_in)))
+                rnn_in = self.dropout(self.activation(self.linear(shared_in)))
                 rnn_out, rnn_new_state = self.rnn(rnn_in, rnn_state)
-                out_in = self.dropout(self.activation(self.linear2(rnn_out + rnn_in)))
-                return self.output(out_in), rnn_new_state
+                out_in1 = self.dropout(self.activation(self.linear1(rnn_out + rnn_in)))
+                out_in2 = self.dropout(self.activation(self.linear2(rnn_out + rnn_in)))
+                out_in3 = self.dropout(self.activation(self.linear3(rnn_out + rnn_in)))
+                return torch.cat((self.output(out_in1), self.output(out_in2), self.output(out_in3)), dim=1), rnn_new_state
+
+        class PolicyHead(nn.Module):
+            def __init__(self,
+                         input_dim,
+                         rnn_hid_dim,
+                         out_dim,
+                         dropout=0.0,
+                         ):
+                super().__init__()
+                self.linear = nn.Linear(input_dim, rnn_hid_dim)
+                self.activation = nn.LeakyReLU()
+                self.dropout = nn.Dropout(dropout)
+                self.rnn = nn.LSTM(rnn_hid_dim, rnn_hid_dim, num_layers=1, batch_first=True, dropout=0.0)
+                self.linear1 = nn.Linear(rnn_hid_dim, rnn_hid_dim)
+                self.output = nn.Linear(rnn_hid_dim, out_dim)
+
+            def forward(self, shared_in, rnn_state):
+                rnn_in = self.dropout(self.activation(self.linear(shared_in)))
+                rnn_out, rnn_new_state = self.rnn(rnn_in, rnn_state)
+                out_in1 = self.dropout(self.activation(self.linear1(rnn_out + rnn_in)))
+                return self.output(out_in1), rnn_new_state
 
         self.rnn_hid_dim = rnn_hid_dim
         self.shared_embedding = SharedEmbedding(src_vocab_len, trg_vocab_len, rnn_hid_dim, src_embed_dim, trg_embed_dim, embedding_dropout)
         self.token_head = Head(rnn_hid_dim, rnn_hid_dim, trg_vocab_len, rnn_dropout)
-        self.policy_head = Head(rnn_hid_dim, rnn_hid_dim, 2, rnn_dropout)
+        self.policy_head = PolicyHead(rnn_hid_dim, rnn_hid_dim, 4, rnn_dropout)
 
     def forward(self, src, previous_output, rnn_state):
         shared_out, rnn_state["embed"] = self.shared_embedding(src, previous_output, rnn_state["embed"])
         token_out, rnn_state["token_head"] = self.token_head(shared_out, rnn_state["token_head"])
         policy_out, rnn_state["policy_head"] = self.policy_head(shared_out, rnn_state["policy_head"])
-        return torch.cat((token_out, policy_out), dim=2), rnn_state
+        return token_out, policy_out, rnn_state
 
     def init_state(self, batch_size, device):
         return {
@@ -378,9 +403,13 @@ class RLST(FairseqEncoderDecoderModel):
         word_output = torch.full((batch_size, 1), self.TRG_NULL, device=device)
         rnn_state = self.approximator.init_state(batch_size, device)
 
-        token_probs = torch.zeros((batch_size, trg_seq_len, self.trg_vocab_len), device=device)
+        token_probs0 = torch.zeros((batch_size, trg_seq_len, self.trg_vocab_len), device=device)
+        token_probs1 = torch.zeros((batch_size, trg_seq_len, self.trg_vocab_len), device=device)
+        token_probs2 = torch.zeros((batch_size, trg_seq_len, self.trg_vocab_len), device=device)
         Q_used = torch.zeros((batch_size, src_seq_len + trg_seq_len - 1), device=device)
         Q_target = torch.zeros((batch_size, src_seq_len + trg_seq_len - 1), device=device)
+
+        who_writes = torch.zeros((batch_size, trg_seq_len), dtype=torch.int64, device=device)
 
         terminated_agents = torch.full((batch_size, 1), False, device=device)
 
@@ -388,28 +417,35 @@ class RLST(FairseqEncoderDecoderModel):
         j = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)  # output indices
 
         input = torch.gather(src, 1, i)
-        output, rnn_state = self.approximator(input, word_output, rnn_state)
-        action = torch.max(output[:, :, -2:], 2)[1]
+        output, Q_values, rnn_state = self.approximator(input, word_output, rnn_state)
+        action = torch.max(Q_values, 2)[1]
 
         logging_is_read = torch.full((batch_size, src_seq_len + trg_seq_len - 1), False, dtype=torch.bool, device=device)
         logging_is_write = torch.full((batch_size, src_seq_len + trg_seq_len - 1), False, dtype=torch.bool, device=device)
 
         for t in range(src_seq_len + trg_seq_len - 1):
-            _, word_output = torch.max(output[:, :, :-2], dim=2)
+            best_write = torch.max(Q_values[:, :, 1:], 2)[1].squeeze(1)
+            best_write = best_write.unsqueeze(1).unsqueeze(1).expand((output.size()[0], 1, output.size()[2]))
+            word_output = torch.gather(output, 1, best_write)
+            _, word_output = torch.max(word_output, dim=2)
+
             random_action_agents = torch.rand((batch_size, 1), device=device) < epsilon
-            random_action = torch.randint(low=0, high=2, size=(batch_size, 1), device=device)
+            random_action = torch.randint(low=0, high=6, size=(batch_size, 1), device=device)
+            random_action[random_action > 3] = 0
             action[random_action_agents] = random_action[random_action_agents]
 
             forced_to_read_agents = torch.rand((batch_size, 1), device=device) < rtf_prob
             should_read_agents = (i - rtf_delta) / src_seq_len < j / trg_seq_len
             action[forced_to_read_agents * should_read_agents] = 0
 
-            Q_used[:, t] = torch.gather(output[:, 0, -2:], 1, action).squeeze_(1)
+            Q_used[:, t] = torch.gather(Q_values.squeeze(1), 1, action).squeeze_(1)
             Q_used[terminated_agents.squeeze(1), t] = 0
 
             with torch.no_grad():
                 reading_agents = ~terminated_agents * (action == 0)
-                writing_agents = ~terminated_agents * (action == 1)
+                writing_agents = ~terminated_agents * (action >= 1)
+
+                who_writes[writing_agents.squeeze(1), j[writing_agents]] = action[writing_agents]
 
                 logging_is_read[:, t] = reading_agents.squeeze(1)
                 logging_is_write[:, t] = writing_agents.squeeze(1)
@@ -427,14 +463,16 @@ class RLST(FairseqEncoderDecoderModel):
 
                 reward = (-1) * self.mistranslation_loss(output[:, 0, :-2], torch.gather(trg, 1, old_j)[:, 0], reduce=False)[0]
 
-            token_probs[writing_agents.squeeze(1), old_j[writing_agents], :] = output[writing_agents.squeeze(1), 0, :-2]
+            token_probs0[writing_agents.squeeze(1), old_j[writing_agents], :] = output[writing_agents.squeeze(1), 0, :]
+            token_probs1[writing_agents.squeeze(1), old_j[writing_agents], :] = output[writing_agents.squeeze(1), 1, :]
+            token_probs2[writing_agents.squeeze(1), old_j[writing_agents], :] = output[writing_agents.squeeze(1), 2, :]
 
             input = torch.gather(src, 1, i)
             input[writing_agents] = self.SRC_NULL
             input[naughty_agents] = self.SRC_EOS
-            output, rnn_state = self.approximator(input, word_output, rnn_state)
-            next_best_action_value, action = torch.max(output[:, :, -2:], 2)
-            next_best_action_value = next_best_action_value.squeeze_(1)
+            output, Q_values, rnn_state = self.approximator(input, word_output, rnn_state)
+            next_best_action_value, action = torch.max(Q_values, 2)
+            next_best_action_value = next_best_action_value.squeeze(1)
 
             with torch.no_grad():
                 Q_target[:, t] = reward + self.DISCOUNT * next_best_action_value
@@ -445,9 +483,9 @@ class RLST(FairseqEncoderDecoderModel):
                 Q_target[naughty_agents.squeeze(1), t] -= self.M
 
                 if torch.all(terminated_agents):
-                    return token_probs, Q_used, Q_target.detach_(), logging_is_read, logging_is_write
+                    return token_probs0, token_probs1, token_probs2, Q_used, Q_target.detach_(), logging_is_read, logging_is_write
 
-        return token_probs, Q_used, Q_target.detach_(), logging_is_read, logging_is_write
+        return token_probs0, token_probs1, token_probs2, who_writes, Q_used, Q_target.detach_(), logging_is_read, logging_is_write
 
 
 class RLSTIncrementalEncoder(FairseqEncoder):
@@ -502,17 +540,20 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
         token_probs = torch.zeros((batch_size, 1, self.trg_vocab_len), device=device)
 
         while True:
-            output, new_rnn_state = self.approximator(input, word_output, copy.deepcopy(rnn_state))
+            output, Q_values, new_rnn_state = self.approximator(input, word_output, copy.deepcopy(rnn_state))
             rnn_state = self.approximator.update_state(copy.deepcopy(rnn_state), new_rnn_state, frozen_agents.squeeze(1))
 
             failed_agents = t > testing_episode_max_time
 
-            action = torch.max(output[:, :, -2:], 2)[1]
+            action = torch.max(Q_values, 2)[1]
             reading_agents = (action == 0) * (~frozen_agents) * (~failed_agents)
-            writing_agents = (action == 1) * (~frozen_agents) + failed_agents
+            writing_agents = (action >= 1) * (~frozen_agents) + failed_agents
             frozen_agents[writing_agents] = True
 
-            token_probs[writing_agents.squeeze(1), 0, :] = output[writing_agents.squeeze(1), 0, :-2]
+            best_write = torch.max(Q_values[:, :, 1:], 2)[1].squeeze(1)
+            best_write = best_write.unsqueeze(1).unsqueeze(1).expand((output.size()[0], 1, output.size()[2]))
+            output = torch.gather(output, 1, best_write)
+            token_probs[writing_agents.squeeze(1), 0, :] = output[writing_agents.squeeze(1), 0, :]
 
             naughty_agents = reading_agents * (torch.gather(src, 1, i) == self.SRC_EOS)
             i = i + ~naughty_agents * reading_agents

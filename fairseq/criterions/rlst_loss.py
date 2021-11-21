@@ -90,7 +90,7 @@ class RLSTCriterionConfig(FairseqDataclass):
         metadata={"help": "rho"}
     )
     rtf_delta: float = field(
-        default=5.0,
+        default=1.0,
         metadata={"help": "rtf_delta"}
     )
     sentence_avg: bool = II("optimization.sentence_avg")
@@ -129,8 +129,8 @@ class RLSTCriterion(FairseqCriterion):
         self.teacher_forcing = self.teacher_forcing_min + (self.teacher_forcing_max - self.teacher_forcing_min) * math.e ** ((-3) * self.n / self.N)
         self.epsilon = self.epsilon_min + (self.epsilon_max - self.epsilon_min) * math.e ** ((-3) * self.n / self.N)
         rtf_prob = math.e ** (-3 * self.n / self.N)
-        word_outputs, Q_used, Q_target, is_read, is_write = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing, self.rtf_delta, rtf_prob)
-        weighted_loss, mistranslation_loss, nll_loss, policy_loss = self.compute_loss(word_outputs, trg_tokens, Q_used, Q_target)
+        token_probs0, token_probs1, token_probs2, actions_taken, Q_used, Q_target, is_read, is_write = model(src_tokens, trg_tokens, self.epsilon, self.teacher_forcing, self.rtf_delta, rtf_prob)
+        weighted_loss, mistranslation_loss, nll_loss, policy_loss = self.compute_loss(token_probs0, token_probs1, token_probs2, actions_taken, trg_tokens, Q_used, Q_target)
         self.n += 1
         total_time_steps = int((is_write + is_read).sum())
         ntokens = sample["ntokens"]
@@ -155,12 +155,32 @@ class RLSTCriterion(FairseqCriterion):
 
         return weighted_loss * ntokens, ntokens, logging_output
 
-    def compute_loss(self, word_outputs, trg, Q_used, Q_target):
+    def compute_loss(self, token_probs0, token_probs1, token_probs2, who_wrote, trg, Q_used, Q_target):
+        who_wrote = who_wrote.reshape(-1)
+        punish_0 = who_wrote != 0
+        punish_1 = who_wrote != 1
+        punish_2 = who_wrote != 2
+        token_probs0 = token_probs0.reshape(-1, token_probs0.shape[-1])
+        token_probs1 = token_probs1.reshape(-1, token_probs1.shape[-1])
+        token_probs2 = token_probs2.reshape(-1, token_probs2.shape[-1])
 
-        word_outputs = word_outputs.reshape(-1, word_outputs.shape[-1])
         trg = trg.view(-1)
 
-        mistranslation_loss, nll_loss = self.mistranslation_criterion(word_outputs, trg, reduce=True)
+        mistranslation_loss0, nll_loss0 = self.mistranslation_criterion(token_probs0, trg, reduce=False)
+        mistranslation_loss1, nll_loss1 = self.mistranslation_criterion(token_probs1, trg, reduce=False)
+        mistranslation_loss2, nll_loss2 = self.mistranslation_criterion(token_probs2, trg, reduce=False)
+
+        punishmento = 0.01
+        mistranslation_loss0[punish_0] *= punishmento
+        nll_loss0[punish_0] *= punishmento
+        mistranslation_loss1[punish_1] *= punishmento
+        nll_loss1[punish_1] *= punishmento
+        mistranslation_loss2[punish_2] *= punishmento
+        nll_loss2[punish_2] *= punishmento
+
+        mistranslation_loss = torch.mean(mistranslation_loss0 + mistranslation_loss1 + mistranslation_loss2)
+        nll_loss = torch.mean(nll_loss0 + nll_loss1 + nll_loss2)
+
         self.eta = self.eta_max - (self.eta_max - self.eta_min) * math.e ** ((-3) * self.n / self.N)
         policy_loss = self.policy_criterion(Q_used, Q_target)/torch.count_nonzero(Q_target)
         self.rho_to_n *= self.RHO
