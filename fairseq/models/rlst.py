@@ -426,8 +426,8 @@ class RLST(FairseqEncoderDecoderModel):
         for t in range(src_seq_len + trg_seq_len - 1):
             best_write = torch.max(Q_values[:, :, 1:], 2)[1].squeeze(1)
             best_write = best_write.unsqueeze(1).unsqueeze(1).expand((output.size()[0], 1, output.size()[2]))
-            word_output = torch.gather(output, 1, best_write)
-            _, word_output = torch.max(word_output, dim=2)
+            best_probs = torch.gather(output, 1, best_write)
+            _, word_output = torch.max(best_probs, dim=2)
 
             random_action_agents = torch.rand((batch_size, 1), device=device) < epsilon
             random_action = torch.randint(low=0, high=6, size=(batch_size, 1), device=device)
@@ -461,7 +461,7 @@ class RLST(FairseqEncoderDecoderModel):
                     word_output = torch.gather(trg, 1, old_j)
                 word_output[reading_agents] = self.TRG_NULL
 
-                reward = (-1) * self.mistranslation_loss(output[:, 0, :-2], torch.gather(trg, 1, old_j)[:, 0], reduce=False)[0]
+                reward = (-1) * self.mistranslation_loss(best_probs.squeeze(1), torch.gather(trg, 1, old_j)[:, 0], reduce=False)[0]
 
             token_probs0[writing_agents.squeeze(1), old_j[writing_agents], :] = output[writing_agents.squeeze(1), 0, :]
             token_probs1[writing_agents.squeeze(1), old_j[writing_agents], :] = output[writing_agents.squeeze(1), 1, :]

@@ -157,9 +157,9 @@ class RLSTCriterion(FairseqCriterion):
 
     def compute_loss(self, token_probs0, token_probs1, token_probs2, who_wrote, trg, Q_used, Q_target):
         who_wrote = who_wrote.reshape(-1)
-        punish_0 = who_wrote != 0
-        punish_1 = who_wrote != 1
-        punish_2 = who_wrote != 2
+        punish_0 = who_wrote != 1
+        punish_1 = who_wrote != 2
+        punish_2 = who_wrote != 3
         token_probs0 = token_probs0.reshape(-1, token_probs0.shape[-1])
         token_probs1 = token_probs1.reshape(-1, token_probs1.shape[-1])
         token_probs2 = token_probs2.reshape(-1, token_probs2.shape[-1])
