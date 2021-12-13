@@ -179,11 +179,15 @@ class DoubleHead(nn.Module):
                 self.activation = nn.LeakyReLU()
                 self.dropout = nn.Dropout(dropout)
                 self.rnn = nn.LSTM(rnn_hid_dim, rnn_hid_dim, num_layers=1, batch_first=True, dropout=0.0)
+                self.conv1 = nn.Conv1d(5, 64, 1, stride=1, padding=0)
+                self.conv2 = nn.Conv1d(64, 1, 1, stride=1, padding=0)
 
             def forward(self, src, prev_out, rnn_state):
                 src_embedded = self.src_embedding(src)
+                conv1_out = self.conv1(src_embedded)
+                conv2_out = self.activation(self.conv2(conv1_out))
                 trg_embedded = self.trg_embedding(prev_out)
-                linear_in = self.dropout(torch.cat((src_embedded, trg_embedded), dim=2))
+                linear_in = self.dropout(torch.cat((conv2_out, trg_embedded), dim=2))
                 rnn_in = self.dropout(self.activation(self.linear(linear_in)))
                 rnn_out, new_rnn_state = self.rnn(rnn_in, rnn_state)
                 return rnn_out + rnn_in, new_rnn_state
@@ -383,8 +387,11 @@ class RLST(FairseqEncoderDecoderModel):
         Q_target = torch.zeros((batch_size, src_seq_len + trg_seq_len - 1), device=device)
 
         terminated_agents = torch.full((batch_size, 1), False, device=device)
+        channels = 5
+        lin_space = torch.linspace(0, channels-1, channels, dtype=torch.long, device=device)
+        SRC_NULL_VECTOR = torch.full((1, channels), self.SRC_NULL, device=device)
 
-        i = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)  # input indices
+        i = lin_space.repeat(batch_size, 1)  # input indices
         j = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)  # output indices
 
         input = torch.gather(src, 1, i)
@@ -400,9 +407,9 @@ class RLST(FairseqEncoderDecoderModel):
             random_action = torch.randint(low=0, high=2, size=(batch_size, 1), device=device)
             action[random_action_agents] = random_action[random_action_agents]
 
-            forced_to_read_agents = torch.rand((batch_size, 1), device=device) < rtf_prob
-            should_read_agents = (i - rtf_delta) / src_seq_len < j / trg_seq_len
-            action[forced_to_read_agents * should_read_agents] = 0
+            # forced_to_read_agents = torch.rand((batch_size, 1), device=device) < rtf_prob
+            # should_read_agents = (i - rtf_delta) / src_seq_len < j / trg_seq_len
+            # action[forced_to_read_agents * should_read_agents] = 0
 
             Q_used[:, t] = torch.gather(output[:, 0, -2:], 1, action).squeeze_(1)
             Q_used[terminated_agents.squeeze(1), t] = 0
@@ -415,7 +422,7 @@ class RLST(FairseqEncoderDecoderModel):
                 logging_is_write[:, t] = writing_agents.squeeze(1)
 
                 just_terminated_agents = writing_agents * (torch.gather(trg, 1, j) == self.TRG_EOS)
-                naughty_agents = reading_agents * (torch.gather(src, 1, i) == self.SRC_EOS)
+                naughty_agents = reading_agents * (torch.gather(src, 1, i[:, -1:]) == self.SRC_EOS)
                 i = i + ~naughty_agents * reading_agents
                 old_j = j
                 j = j + writing_agents * ~just_terminated_agents
@@ -430,8 +437,8 @@ class RLST(FairseqEncoderDecoderModel):
             token_probs[writing_agents.squeeze(1), old_j[writing_agents], :] = output[writing_agents.squeeze(1), 0, :-2]
 
             input = torch.gather(src, 1, i)
-            input[writing_agents] = self.SRC_NULL
-            input[naughty_agents] = self.SRC_EOS
+            input[writing_agents.squeeze(1)] = SRC_NULL_VECTOR
+            # input[naughty_agents, :-1] = self.SRC_EOS
             output, rnn_state = self.approximator(input, word_output, rnn_state)
             next_best_action_value, action = torch.max(output[:, :, -2:], 2)
             next_best_action_value = next_best_action_value.squeeze_(1)
