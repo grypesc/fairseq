@@ -179,8 +179,8 @@ class DoubleHead(nn.Module):
                 self.activation = nn.LeakyReLU()
                 self.dropout = nn.Dropout(dropout)
                 self.rnn = nn.LSTM(rnn_hid_dim, rnn_hid_dim, num_layers=1, batch_first=True, dropout=0.0)
-                self.conv1 = nn.Conv1d(channels, 64, 1, stride=1, padding=0)
-                self.conv2 = nn.Conv1d(64, 1, 1, stride=1, padding=0)
+                self.conv1 = nn.Conv1d(channels, 16, 1, stride=1, padding=0)
+                self.conv2 = nn.Conv1d(16, 1, 1, stride=1, padding=0)
 
             def forward(self, src, prev_out, rnn_state):
                 src_embedded = self.src_embedding(src)
@@ -384,7 +384,7 @@ class RLST(FairseqEncoderDecoderModel):
         channels = 5
 
         if src.size()[1] < channels:
-            src_extender = torch.full((batch_size, channels + 1), self.SRC_NULL, device=device)
+            src_extender = torch.full((batch_size, channels), self.SRC_NULL, device=device)
             src_extender[:, :src.shape[1]] = src
             src = src_extender
 
@@ -416,10 +416,6 @@ class RLST(FairseqEncoderDecoderModel):
             random_action_agents = torch.rand((batch_size, 1), device=device) < epsilon
             random_action = torch.randint(low=0, high=2, size=(batch_size, 1), device=device)
             action[random_action_agents] = random_action[random_action_agents]
-
-            # forced_to_read_agents = torch.rand((batch_size, 1), device=device) < rtf_prob
-            # should_read_agents = (i - rtf_delta) / src_seq_len < j / trg_seq_len
-            # action[forced_to_read_agents * should_read_agents] = 0
 
             Q_used[:, t] = torch.gather(output[:, 0, -2:], 1, action).squeeze_(1)
             Q_used[terminated_agents.squeeze(1), t] = 0
@@ -474,7 +470,7 @@ class RLSTIncrementalEncoder(FairseqEncoder):
 
     def forward(self, src_tokens, src_lengths):
         if src_tokens.size()[1] < self.channels:
-            src_extender = torch.full((src_tokens.size()[0], self.channels + 1), self.SRC_NULL, device=src_tokens.device)
+            src_extender = torch.full((src_tokens.size()[0], self.channels), self.SRC_NULL, device=src_tokens.device)
             src_extender[:, :src_tokens.shape[1]] = src_tokens
             src_tokens = src_extender
 
@@ -510,7 +506,8 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
 
         cached_state = utils.get_incremental_state(self, incremental_state, 'cached_state')
         if cached_state is None:
-            i = torch.zeros(size=(batch_size, self.channels), dtype=torch.long, device=device)
+            lin_space = torch.linspace(0, self.channels - 1, self.channels, dtype=torch.long, device=device)
+            i = lin_space.repeat(batch_size, 1)  # input indices
             t = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
             rnn_state = self.approximator.init_state(batch_size, device)
             input = src[:, :5]
