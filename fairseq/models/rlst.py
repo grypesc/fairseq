@@ -160,7 +160,7 @@ class DoubleHead(nn.Module):
                  src_embed_dim=256,
                  trg_embed_dim=256,
                  embedding_dropout=0.0,
-                 ):
+                 channels=5):
         super().__init__()
 
         class SharedEmbedding(nn.Module):
@@ -179,7 +179,7 @@ class DoubleHead(nn.Module):
                 self.activation = nn.LeakyReLU()
                 self.dropout = nn.Dropout(dropout)
                 self.rnn = nn.LSTM(rnn_hid_dim, rnn_hid_dim, num_layers=1, batch_first=True, dropout=0.0)
-                self.conv1 = nn.Conv1d(5, 64, 1, stride=1, padding=0)
+                self.conv1 = nn.Conv1d(channels, 64, 1, stride=1, padding=0)
                 self.conv2 = nn.Conv1d(64, 1, 1, stride=1, padding=0)
 
             def forward(self, src, prev_out, rnn_state):
@@ -263,7 +263,7 @@ class RLST(FairseqEncoderDecoderModel):
     """
     def __init__(self, approximator, trg_vocab_len, discount, m, mistranslation_loss,
                  src_eos_index, src_null_index, src_pad_index, trg_eos_index, trg_null_index, trg_pad_index,
-                 incremental_encoder, incremental_decoder):
+                 incremental_encoder, incremental_decoder, channels=5):
         super().__init__(incremental_encoder, incremental_decoder)
         self.approximator = approximator
         self.trg_vocab_len = trg_vocab_len
@@ -278,6 +278,7 @@ class RLST(FairseqEncoderDecoderModel):
         self.TRG_NULL = trg_null_index
         self.TRG_PAD = trg_pad_index
 
+        self.channels = channels
         self.encoder = incremental_encoder
         self.decoder = incremental_decoder
 
@@ -329,6 +330,7 @@ class RLST(FairseqEncoderDecoderModel):
         source_vocab = task.source_dictionary
         target_vocab = task.target_dictionary
         TESTING_EPISODE_MAX_TIME = args.max_testing_time
+        channels = 5
 
         approximator = DoubleHead(
             src_vocab_len=len(source_vocab.symbols),
@@ -338,12 +340,14 @@ class RLST(FairseqEncoderDecoderModel):
             rnn_hid_dim=args.rnn_hid_dim,
             rnn_dropout=args.rnn_dropout,
             embedding_dropout=args.embedding_dropout,
-            rnn_num_layers=args.rnn_num_layers)
+            rnn_num_layers=args.rnn_num_layers,
+            channels=channels)
 
         mistranslation_loss = LabelSmoothedCrossEntropy(label_smoothing=args.smoothing)
-        incremental_encoder = RLSTIncrementalEncoder(task.source_dictionary)
+        incremental_encoder = RLSTIncrementalEncoder(task.source_dictionary, channels)
         incremental_decoder = RLSTIncrementalDecoder(task.target_dictionary,
                                                      approximator,
+                                                     channels,
                                                      TESTING_EPISODE_MAX_TIME,
                                                      source_vocab.eos_index,
                                                      source_vocab.bos_index,
@@ -377,6 +381,13 @@ class RLST(FairseqEncoderDecoderModel):
 
         device = src.device
         batch_size = src.size()[0]
+        channels = 5
+
+        if src.size()[1] < channels:
+            src_extender = torch.full((batch_size, channels + 1), self.SRC_NULL, device=device)
+            src_extender[:, :src.shape[1]] = src
+            src = src_extender
+
         src_seq_len = src.size()[1]
         trg_seq_len = trg.size()[1]
         word_output = torch.full((batch_size, 1), self.TRG_NULL, device=device)
@@ -387,7 +398,6 @@ class RLST(FairseqEncoderDecoderModel):
         Q_target = torch.zeros((batch_size, src_seq_len + trg_seq_len - 1), device=device)
 
         terminated_agents = torch.full((batch_size, 1), False, device=device)
-        channels = 5
         lin_space = torch.linspace(0, channels-1, channels, dtype=torch.long, device=device)
         SRC_NULL_VECTOR = torch.full((1, channels), self.SRC_NULL, device=device)
 
@@ -401,7 +411,7 @@ class RLST(FairseqEncoderDecoderModel):
         logging_is_read = torch.full((batch_size, src_seq_len + trg_seq_len - 1), False, dtype=torch.bool, device=device)
         logging_is_write = torch.full((batch_size, src_seq_len + trg_seq_len - 1), False, dtype=torch.bool, device=device)
 
-        for t in range(src_seq_len + trg_seq_len - 1):
+        for t in range(src_seq_len + trg_seq_len - channels):
             _, word_output = torch.max(output[:, :, :-2], dim=2)
             random_action_agents = torch.rand((batch_size, 1), device=device) < epsilon
             random_action = torch.randint(low=0, high=2, size=(batch_size, 1), device=device)
@@ -422,7 +432,7 @@ class RLST(FairseqEncoderDecoderModel):
                 logging_is_write[:, t] = writing_agents.squeeze(1)
 
                 just_terminated_agents = writing_agents * (torch.gather(trg, 1, j) == self.TRG_EOS)
-                naughty_agents = reading_agents * (torch.gather(src, 1, i[:, -1:]) == self.SRC_EOS)
+                naughty_agents = reading_agents * torch.sum(torch.gather(src, 1, i) == self.SRC_EOS, dtype=torch.bool, dim=1).unsqueeze(1)
                 i = i + ~naughty_agents * reading_agents
                 old_j = j
                 j = j + writing_agents * ~just_terminated_agents
@@ -458,10 +468,16 @@ class RLST(FairseqEncoderDecoderModel):
 
 
 class RLSTIncrementalEncoder(FairseqEncoder):
-    def __init__(self, dictionary):
+    def __init__(self, dictionary, channels):
         super().__init__(dictionary)
+        self.channels = channels
 
     def forward(self, src_tokens, src_lengths):
+        if src_tokens.size()[1] < self.channels:
+            src_extender = torch.full((src_tokens.size()[0], self.channels + 1), self.SRC_NULL, device=src_tokens.device)
+            src_extender[:, :src_tokens.shape[1]] = src_tokens
+            src_tokens = src_extender
+
         return src_tokens
 
     def reorder_encoder_out(self, encoder_out, new_order):
@@ -469,12 +485,13 @@ class RLSTIncrementalEncoder(FairseqEncoder):
 
 
 class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
-    def __init__(self, dictionary, approximator, testing_episode_max_time,
+    def __init__(self, dictionary, approximator, channels, testing_episode_max_time,
                  src_eos_index, src_null_index, trg_eos_index, trg_null_index):
 
         super().__init__(dictionary)
         self.TESTING_EPISODE_MAX_TIME = testing_episode_max_time
         self.approximator = approximator
+        self.channels = channels
         self.SRC_EOS = src_eos_index
         self.SRC_NULL = src_null_index
         self.TRG_EOS = trg_eos_index
@@ -493,13 +510,13 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
 
         cached_state = utils.get_incremental_state(self, incremental_state, 'cached_state')
         if cached_state is None:
-            i = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
+            i = torch.zeros(size=(batch_size, self.channels), dtype=torch.long, device=device)
             t = torch.zeros(size=(batch_size, 1), dtype=torch.long, device=device)
             rnn_state = self.approximator.init_state(batch_size, device)
-            input = src[:, :1]
+            input = src[:, :5]
             word_output = torch.full((batch_size, 1), self.TRG_NULL, device=device)
         else:
-            input = torch.full((batch_size, 1), self.SRC_NULL, device=device)
+            input = torch.full((batch_size, 5), self.SRC_NULL, device=device)
             i = cached_state["i"]
             t = cached_state["t"]
             rnn_state = cached_state["rnn_state"]
@@ -521,9 +538,8 @@ class RLSTIncrementalDecoder(FairseqIncrementalDecoder):
 
             token_probs[writing_agents.squeeze(1), 0, :] = output[writing_agents.squeeze(1), 0, :-2]
 
-            naughty_agents = reading_agents * (torch.gather(src, 1, i) == self.SRC_EOS)
+            naughty_agents = reading_agents * torch.sum(torch.gather(src, 1, i) == self.SRC_EOS, dtype=torch.bool, dim=1).unsqueeze(1)
             i = i + ~naughty_agents * reading_agents
-            i[i >= src_seq_len] = src_seq_len - 1
 
             input = torch.gather(src, 1, i)
             word_output[reading_agents] = self.TRG_NULL
